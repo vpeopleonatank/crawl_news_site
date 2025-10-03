@@ -1,0 +1,33 @@
+erDiagram
+    articles ||--o{ article_images : has
+    articles ||--o{ article_videos : has
+    articles {
+        bigserial id PK
+        text title
+        text description
+        text content
+        text category_id
+        text category_name
+        jsonb comments
+        text tags
+        text url UK
+        timestamp publish_date
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    article_images {
+        bigserial id PK
+        bigint article_id FK
+        text image_path
+        int sequence_number
+        timestamp created_at
+    }
+    
+    article_videos {
+        bigserial id PK
+        bigint article_id FK
+        text video_path
+        int sequence_number
+        timestamp created_at
+    }

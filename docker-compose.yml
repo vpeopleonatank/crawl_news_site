@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: crawl_db
+    environment:
+      POSTGRES_USER: crawl_user
+      POSTGRES_PASSWORD: crawl_password
+      POSTGRES_DB: crawl_db
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crawl_user -d crawl_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - crawl_network
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: crawl_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - crawl_network
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  test_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crawl_test_app
+    environment:
+      DATABASE_URL: postgresql://crawl_user:crawl_password@postgres:5432/crawl_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+    command: python test_models.py
+    networks:
+      - crawl_network
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+
+networks:
+  crawl_network:
+    driver: bridge
