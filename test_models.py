@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from models import Base, Article, ArticleImage, ArticleVideo, generate_image_path, generate_video_path
 
 # Get database URL from environment
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://crawl_user:crawl_password@localhost:5432/crawl_db')
+DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://crawl_user:crawl_password@localhost:5433/crawl_db')
 
 print("=" * 60)
 print("Testing SQLAlchemy Models with UUIDv7")
