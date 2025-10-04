@@ -70,11 +70,12 @@
 - Module: `crawler/ingest_thanhnien.py`
 - CLI Example:
   ```bash
+  # add --rerun if interrupt from previous run
   python -m crawler.ingest_thanhnien \
       --jobs-file data/thanhnien_jobs.ndjson \
       --storage-root storage \
       --max-workers 4 \
-      --db-url postgresql://crawl_user:crawl_password@localhost:5432/crawl_db
+      --db-url postgresql://crawl_user:crawl_password@localhost:5433/crawl_db
   ```
 - Orchestrates worker pool:
   1. Load jobs
