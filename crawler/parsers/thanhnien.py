@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import re
 
 from bs4 import BeautifulSoup
 
@@ -11,6 +12,13 @@ from . import ArticleParser, ParsedArticle, ParsedAsset, AssetType, ParsingError
 
 class ThanhnienParser(ArticleParser):
     """Parse ThanhNien.vn article HTML into structured data."""
+
+    _DATETIME_TEXT_PATTERN = re.compile(
+        r"(?P<day>\d{1,2})/(?P<month>\d{1,2})/(?P<year>\d{4})\s+"
+        r"(?P<hour>\d{1,2}):(?P<minute>\d{2})"
+        r"(?:\s+(?:GMT|UTC)(?P<offset>[+-]\d{1,2})(?::?(?P<offset_minute>\d{2}))?)?",
+        re.IGNORECASE,
+    )
 
     def parse(self, url: str, html: str) -> ParsedArticle:
         soup = BeautifulSoup(html, "html.parser")
@@ -24,34 +32,50 @@ class ThanhnienParser(ArticleParser):
         description_tag = soup.find("h2")
         description = description_tag.text.strip() if description_tag and description_tag.text else None
 
-        content_container = soup.find("div", class_="detail__content")
+        content_container = soup.select_one(
+            'div[data-role="content"], div.detail__content, div.detail-content'
+        )
         if content_container is None:
             raise ParsingError("Article body not found")
-        paragraphs = [p.get_text(strip=True) for p in content_container.find_all("p") if p.get_text(strip=True)]
+
+        paragraphs = []
+        for element in content_container.find_all("p"):
+            if element.find_parent(["figure", "figcaption"]):
+                continue
+            text = element.get_text(strip=True)
+            if text:
+                paragraphs.append(text)
         content = "\n\n".join(paragraphs)
 
         category_name = None
         category_id = None
-        breadcrumb = soup.find("ul", class_="breadcrumb")
-        if breadcrumb:
-            category_links = breadcrumb.find_all("a")
-            if category_links:
-                category_name = category_links[-1].get_text(strip=True) or None
-                if category_name:
-                    category_id = category_name.lower().replace(" ", "-")
+        category_link = soup.select_one(
+            "ul.breadcrumb a:last-child, div.detail-cate a[data-role='cate-name'], div.detail-cate a"
+        )
+        if category_link:
+            category_name = category_link.get_text(strip=True) or None
+            if category_name:
+                category_id = category_name.lower().replace(" ", "-")
 
         publish_date = None
-        date_tag = soup.find("div", class_="detail__meta")
-        if date_tag and date_tag.time:
-            raw_datetime = date_tag.time.get("datetime") or date_tag.time.get_text(strip=True)
-            if raw_datetime:
-                try:
-                    publish_date = datetime.fromisoformat(raw_datetime.replace("Z", "+00:00"))
-                except ValueError:
-                    publish_date = None
+        meta_date = soup.find("meta", attrs={"itemprop": "datePublished"})
+        if meta_date and meta_date.get("content"):
+            publish_date = self._parse_iso_datetime(meta_date["content"])
+
+        if publish_date is None:
+            meta_date = soup.find("meta", attrs={"property": "article:published_time"})
+            if meta_date and meta_date.get("content"):
+                publish_date = self._parse_iso_datetime(meta_date["content"])
+
+        if publish_date is None:
+            time_node = soup.select_one("div.detail__meta time, div.detail-time [data-role='publishdate']")
+            if time_node:
+                raw_datetime = time_node.get("datetime") or time_node.get_text(strip=True)
+                if raw_datetime:
+                    publish_date = self._parse_datetime_text(raw_datetime)
 
         tags = []
-        tag_section = soup.find("div", class_="detail__tags")
+        tag_section = soup.select_one("div.detail__tags, div[data-role='tags']")
         if tag_section:
             tags = [tag.get_text(strip=True) for tag in tag_section.find_all("a") if tag.get_text(strip=True)]
 
@@ -101,3 +125,48 @@ class ThanhnienParser(ArticleParser):
             comments=None,
             assets=structured_assets,
         )
+
+    def _parse_iso_datetime(self, raw_value: str) -> datetime | None:
+        try:
+            return datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _parse_datetime_text(self, raw_value: str) -> datetime | None:
+        raw_value = raw_value.strip()
+
+        parsed_iso = self._parse_iso_datetime(raw_value)
+        if parsed_iso is not None:
+            return parsed_iso
+
+        match = self._DATETIME_TEXT_PATTERN.search(raw_value)
+        if not match:
+            return None
+
+        try:
+            day = int(match.group("day"))
+            month = int(match.group("month"))
+            year = int(match.group("year"))
+            hour = int(match.group("hour"))
+            minute = int(match.group("minute"))
+        except (TypeError, ValueError):
+            return None
+
+        dt = datetime(year, month, day, hour, minute)
+
+        offset_str = match.group("offset")
+        if offset_str:
+            minutes_part = match.group("offset_minute")
+            try:
+                hours_value = abs(int(offset_str))
+                minutes_value = int(minutes_part) if minutes_part else 0
+            except ValueError:
+                return dt
+
+            sign = -1 if offset_str.strip().startswith("-") else 1
+            delta = timedelta(hours=hours_value, minutes=minutes_value)
+            delta *= sign
+            tzinfo = timezone(delta)
+            dt = dt.replace(tzinfo=tzinfo)
+
+        return dt
