@@ -1,6 +1,12 @@
+import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from crawler.ingest_thanhnien import _update_video_assets_with_playwright
+from crawler.config import IngestConfig
+from crawler.http_client import HttpFetchError
+from crawler.ingest_thanhnien import _record_fetch_failure, _update_video_assets_with_playwright
+from crawler.jobs import ArticleJob
 from crawler.parsers import AssetType, ParsedAsset
 from crawler.playwright_support import PlaywrightVideoResolverError
 
@@ -58,6 +64,35 @@ class UpdateVideoAssetsPlaywrightTestCase(unittest.TestCase):
         _update_video_assets_with_playwright(resolver, self.article_url, self.assets)
 
         self.assertEqual(self.assets[0].source_url, original_url)
+
+
+class RecordFetchFailureTestCase(unittest.TestCase):
+    def test_writes_failure_entry_to_log(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            config = IngestConfig(
+                storage_root=tmp_path / "storage",
+                log_dir=tmp_path / "logs",
+            )
+            config.ensure_directories()
+            job = ArticleJob(
+                url="https://example.com/article",
+                lastmod="2025-10-03T00:00:00+07:00",
+                sitemap_url="https://example.com/sitemap.xml",
+                image_url=None,
+            )
+            error = HttpFetchError("Exhausted retries while fetching HTML")
+
+            _record_fetch_failure(config, job, error)
+
+            log_file = config.log_dir / "fetch_failures.ndjson"
+            self.assertTrue(log_file.exists())
+            lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 1)
+            payload = json.loads(lines[0])
+            self.assertEqual(payload["url"], job.url)
+            self.assertEqual(payload["error"], str(error))
+            self.assertEqual(payload["error_type"], "HttpFetchError")
 
 
 if __name__ == "__main__":

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+from datetime import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -25,6 +27,7 @@ from .playwright_support import (
 )
 
 LOGGER = logging.getLogger(__name__)
+_FETCH_FAILURE_LOG = "fetch_failures.ndjson"
 
 
 @dataclass(slots=True)
@@ -116,6 +119,27 @@ def persist_raw_html(config: IngestConfig, article_id: str, html: str) -> None:
     raw_path = config.raw_html_path(article_id)
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     raw_path.write_text(html, encoding="utf-8")
+
+
+def _record_fetch_failure(config: IngestConfig, job: ArticleJob, exc: Exception) -> None:
+    payload = {
+        "url": job.url,
+        "sitemap_url": job.sitemap_url,
+        "lastmod": job.lastmod,
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+
+    log_path = config.log_dir / _FETCH_FAILURE_LOG
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError as file_error:  # pragma: no cover - filesystem failure path
+        LOGGER.warning(
+            "Failed to record fetch failure for %s: %s", job.url, file_error
+        )
 
 
 def _update_video_assets_with_playwright(
@@ -221,6 +245,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             except (HttpFetchError, ParsingError, AssetDownloadError, ArticlePersistenceError) as exc:
                 stats.failed += 1
                 LOGGER.error("Failed to process %s: %s", job.url, exc)
+                if isinstance(exc, HttpFetchError):
+                    _record_fetch_failure(config, job, exc)
             except Exception as exc:  # pragma: no cover - unexpected failure
                 stats.failed += 1
                 LOGGER.exception("Unhandled error for %s", job.url)

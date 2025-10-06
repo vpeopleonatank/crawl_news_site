@@ -96,6 +96,7 @@
 ## Failure Handling & Observability
 - Retries with exponential backoff for network errors; hard-fail on 404/410 with reason stored in job state.
 - Jobs capped at 3 attempts; failures written to `storage/logs/ingest_failures.ndjson` with detailed context.
+- Fetch attempts that exhaust retries append a JSON line to `storage/logs/fetch_failures.ndjson` capturing URL, sitemap source, lastmod, error string, and timestamp for follow-up runs.
 - Structured logging via `structlog` to make it easy to ship logs later.
 - Metrics counters (success, failure, skipped, asset download failures) aggregated and printed on exit.
 
