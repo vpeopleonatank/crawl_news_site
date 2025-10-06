@@ -75,7 +75,8 @@
       --jobs-file data/thanhnien_jobs.ndjson \
       --storage-root storage \
       --max-workers 4 \
-      --db-url postgresql://crawl_user:crawl_password@localhost:5433/crawl_db
+      --db-url postgresql://crawl_user:crawl_password@localhost:5433/crawl_db \
+      --use-playwright
   ```
 - Orchestrates worker pool:
   1. Load jobs
