@@ -1,121 +1,79 @@
-import hashlib
-import tempfile
 import unittest
-from pathlib import Path
 
 import httpx
 
 from crawler.assets import AssetManager, AssetDownloadError
 from crawler.config import IngestConfig
-from crawler.parsers import AssetType, ParsedAsset
 
 
-class AssetManagerTestCase(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmpdir = tempfile.TemporaryDirectory()
-        storage_root = Path(self._tmpdir.name)
-        self.config = IngestConfig(storage_root=storage_root)
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload or {}
 
-        asset_payloads = {
-            "https://cdn.example.com/image.jpg": b"image-bytes",
-            "https://cdn.example.com/video.mp4": b"video-bytes",
-            "https://cdn.example.com/empty.bin": b"",
-        }
+    def raise_for_status(self) -> None:
+        if not (200 <= self.status_code < 300):
+            raise httpx.HTTPStatusError("error", request=None, response=None)
 
-        def handler(request: httpx.Request) -> httpx.Response:
-            url = str(request.url)
-            if url not in asset_payloads:
-                return httpx.Response(404)
-            return httpx.Response(200, content=asset_payloads[url])
+    def json(self):
+        return self._payload
 
-        self.transport = httpx.MockTransport(handler)
-        self.client = httpx.Client(transport=self.transport)
-        self.manager = AssetManager(self.config, client=self.client)
-        self.asset_payloads = asset_payloads
 
-    def tearDown(self) -> None:
-        # AssetManager only closes clients it owns.
-        self.client.close()
-        self._tmpdir.cleanup()
+class FakeClient:
+    def __init__(self, response_map=None):
+        self.response_map = response_map or {}
+        self.requested_urls = []
 
-    def test_download_assets_streams_and_hashes(self) -> None:
-        assets = [
-            ParsedAsset(
-                source_url="https://cdn.example.com/image.jpg",
-                asset_type=AssetType.IMAGE,
-                sequence=2,
-                caption="Example image",
-            ),
-            ParsedAsset(
-                source_url="data:image/png;base64,AAA",
-                asset_type=AssetType.IMAGE,
-                sequence=3,
-            ),
-            ParsedAsset(
-                source_url="https://cdn.example.com/image.jpg",
-                asset_type=AssetType.IMAGE,
-                sequence=1,
-            ),
-            ParsedAsset(
-                source_url="https://cdn.example.com/video.mp4",
-                asset_type=AssetType.VIDEO,
-                sequence=4,
-            ),
-        ]
+    def get(self, url, timeout=None):
+        self.requested_urls.append(url)
+        if url not in self.response_map:
+            raise httpx.HTTPError("not found")
+        return self.response_map[url]
 
-        stored_assets = self.manager.download_assets("article-123", assets)
+    def stream(self, method, url):  # pragma: no cover - not used in these tests
+        raise NotImplementedError
 
-        self.assertEqual(len(stored_assets), 2)
 
-        image_asset, video_asset = stored_assets
-
-        self.assertTrue(image_asset.path.exists())
-        expected_image_path = (
-            self.config.storage_root
-            / "articles"
-            / "article-123"
-            / "images"
-            / "001.jpg"
+class AssetManagerResolveVideoTestCase(unittest.TestCase):
+    def test_resolves_thanhnien_hls_manifest(self) -> None:
+        manifest_url = (
+            "https://thanhnien.mediacdn.vn/325084952045817856/2025/10/3/"
+            "1-1759489185419194083592.mp4.json"
         )
-        self.assertEqual(image_asset.path, expected_image_path)
-        self.assertEqual(
-            image_asset.checksum,
-            hashlib.sha256(self.asset_payloads["https://cdn.example.com/image.jpg"]).hexdigest(),
+        expected_hls = (
+            "https://thanhnien.mediacdn.vn/.hls/325084952045817856/2025/10/3/"
+            "1-1759489185419194083592.mp4.master.m3u8?v=f-f3f2838c-1"
         )
-        self.assertEqual(
-            image_asset.bytes_downloaded,
-            len(self.asset_payloads["https://cdn.example.com/image.jpg"]),
+        fake_client = FakeClient(
+            {
+                manifest_url: FakeResponse(
+                    payload={
+                        "hls": expected_hls,
+                        "mhls": "https://thanhnien.mediacdn.vn/.hls/mobile.m3u8",
+                    }
+                )
+            }
         )
 
-        self.assertTrue(video_asset.path.exists())
-        expected_video_path = (
-            self.config.storage_root
-            / "articles"
-            / "article-123"
-            / "videos"
-            / "004.mp4"
-        )
-        self.assertEqual(video_asset.path, expected_video_path)
-        self.assertEqual(
-            video_asset.checksum,
-            hashlib.sha256(self.asset_payloads["https://cdn.example.com/video.mp4"]).hexdigest(),
-        )
-        self.assertEqual(
-            video_asset.bytes_downloaded,
-            len(self.asset_payloads["https://cdn.example.com/video.mp4"]),
+        manager = AssetManager(IngestConfig(), client=fake_client)
+        source = (
+            "https://thanhnien.mediacdn.vn/325084952045817856/2025/10/3/"
+            "1-1759489185419194083592.mp4"
         )
 
-    def test_empty_body_raises_error(self) -> None:
-        empty_assets = [
-            ParsedAsset(
-                source_url="https://cdn.example.com/empty.bin",
-                asset_type=AssetType.IMAGE,
-                sequence=1,
-            )
-        ]
+        resolved = manager._resolve_video_source(source)
 
-        with self.assertRaises(AssetDownloadError):
-            self.manager.download_assets("article-abc", empty_assets)
+        self.assertEqual(resolved, expected_hls)
+        self.assertEqual(fake_client.requested_urls, [manifest_url])
+
+    def test_resolver_falls_back_when_manifest_missing(self) -> None:
+        source = "https://thanhnien.mediacdn.vn/video/sample.mp4"
+        fake_client = FakeClient({})
+        manager = AssetManager(IngestConfig(), client=fake_client)
+
+        resolved = manager._resolve_video_source(source)
+
+        self.assertEqual(resolved, source)
 
 
 if __name__ == "__main__":

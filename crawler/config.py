@@ -33,6 +33,74 @@ class TimeoutConfig:
 
 
 @dataclass(slots=True)
+class ProxyConfig:
+    """Configuration for outbound proxy usage and IP rotation."""
+
+    scheme: str = "http"
+    host: Optional[str] = None
+    port: Optional[int] = None
+    api_key: Optional[str] = None
+    change_ip_url: Optional[str] = None
+    min_rotation_interval: float = 240.0
+
+    @property
+    def address(self) -> Optional[str]:
+        if self.host is None or self.port is None:
+            return None
+        return f"{self.host}:{self.port}"
+
+    def httpx_proxy(self) -> Optional[str]:
+        address = self.address
+        if not address:
+            return None
+        return f"{self.scheme}://{address}"
+
+    @classmethod
+    def from_endpoint(
+        cls,
+        endpoint: str,
+        *,
+        scheme: str = "http",
+        change_ip_url: Optional[str] = None,
+        min_rotation_interval: float = 240.0,
+        api_key: Optional[str] = None,
+    ) -> "ProxyConfig":
+        cleaned = endpoint.strip()
+        if not cleaned:
+            raise ValueError("Proxy endpoint must not be empty")
+
+        parts = cleaned.split(":")
+        if len(parts) < 2:
+            raise ValueError("Proxy endpoint must be in 'host:port[:key]' format")
+
+        host = parts[0].strip()
+        if not host:
+            raise ValueError("Proxy host must not be empty")
+
+        port_str = parts[1].strip()
+        if not port_str:
+            raise ValueError("Proxy port must not be empty")
+
+        try:
+            port = int(port_str)
+        except ValueError as exc:
+            raise ValueError("Proxy port must be an integer") from exc
+
+        key = ":".join(parts[2:]).strip() if len(parts) > 2 else None
+        if api_key is not None:
+            key = api_key
+
+        return cls(
+            scheme=scheme,
+            host=host,
+            port=port,
+            api_key=key if key else None,
+            change_ip_url=change_ip_url,
+            min_rotation_interval=min_rotation_interval,
+        )
+
+
+@dataclass(slots=True)
 class IngestConfig:
     jobs_file: Path = DEFAULT_JOBS_FILE
     storage_root: Path = DEFAULT_STORAGE_ROOT
@@ -44,6 +112,9 @@ class IngestConfig:
     resume: bool = False
     raw_html_cache_enabled: bool = False
     log_dir: Path = DEFAULT_LOG_DIR
+    proxy: Optional[ProxyConfig] = None
+    playwright_enabled: bool = False
+    playwright_timeout: float = 30.0
 
     def ensure_directories(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)

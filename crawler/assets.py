@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -73,17 +76,29 @@ class AssetManager:
                 LOGGER.debug("Skipping duplicate asset URL %s for article %s", asset.source_url, article_id)
                 continue
 
-            seen_sources.add(asset.source_url)
+            resolved_url = asset.source_url
+            if asset.asset_type == AssetType.VIDEO:
+                resolved_url = self._resolve_video_source(resolved_url)
+                asset.source_url = resolved_url
+
+            seen_sources.add(resolved_url)
             if asset.asset_type == AssetType.IMAGE:
                 target_dir = image_root
-                extension = self._extension_from_url(asset.source_url, default="jpg")
+                extension = self._extension_from_url(resolved_url, default="jpg")
+                filename = f"{asset.sequence:03d}.{extension}"
+                target_path = target_dir / filename
+                checksum, bytes_written = self._stream_to_file(resolved_url, target_path)
             else:
                 target_dir = video_root
-                extension = self._extension_from_url(asset.source_url, default="mp4")
-
-            filename = f"{asset.sequence:03d}.{extension}"
-            target_path = target_dir / filename
-            checksum, bytes_written = self._stream_to_file(asset.source_url, target_path)
+                if self._is_hls_manifest(resolved_url):
+                    filename = f"{asset.sequence:03d}.mp4"
+                    target_path = target_dir / filename
+                    checksum, bytes_written = self._download_hls(resolved_url, target_path)
+                else:
+                    extension = self._extension_from_url(resolved_url, default="mp4")
+                    filename = f"{asset.sequence:03d}.{extension}"
+                    target_path = target_dir / filename
+                    checksum, bytes_written = self._stream_to_file(resolved_url, target_path)
             stored.append(
                 StoredAsset(
                     source=asset,
@@ -93,6 +108,80 @@ class AssetManager:
                 )
             )
         return stored
+
+    @staticmethod
+    def _is_hls_manifest(url: str) -> bool:
+        path = urlsplit(url).path
+        return path.endswith(".m3u8")
+
+    def _resolve_video_source(self, url: str) -> str:
+        if self._is_hls_manifest(url):
+            return url
+
+        parsed = urlsplit(url)
+        if "thanhnien.mediacdn.vn" not in parsed.netloc:
+            return url
+
+        if not parsed.path.endswith(".mp4"):
+            return url
+
+        manifest_url = url + ".json"
+        try:
+            response = self._client.get(manifest_url, timeout=self._config.timeout.asset_timeout)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:  # pragma: no cover - network failure path
+            LOGGER.debug("Failed to fetch manifest %s: %s", manifest_url, exc)
+            return url
+
+        try:
+            payload = response.json()
+        except ValueError:
+            LOGGER.debug("Manifest %s returned non-JSON payload", manifest_url)
+            return url
+
+        if isinstance(payload, dict):
+            hls_url = payload.get("hls") or payload.get("mhls")
+            if hls_url:
+                LOGGER.debug("Resolved Thanhnien HLS %s from manifest %s", hls_url, manifest_url)
+                return hls_url
+
+        return url
+
+    def _download_hls(self, manifest_url: str, target: Path) -> tuple[str, int]:
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            raise AssetDownloadError("ffmpeg is required to download HLS streams")
+
+        temporary_target = target.with_name(target.name + ".tmp")
+        LOGGER.debug("Downloading HLS stream %s to %s", manifest_url, target)
+        command = [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            manifest_url,
+            "-c",
+            "copy",
+            "-bsf:a",
+            "aac_adtstoasc",
+            "-f",
+            "mp4",
+            str(temporary_target),
+        ]
+
+        try:
+            subprocess.run(command, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            if temporary_target.exists():
+                temporary_target.unlink(missing_ok=True)
+            stderr_output = exc.stderr.decode(errors="ignore") if exc.stderr else ""
+            message = stderr_output.strip() or str(exc)
+            raise AssetDownloadError(f"ffmpeg failed to process {manifest_url}: {message}") from exc
+
+        temporary_target.replace(target)
+        return self._hash_file(target)
 
     def _stream_to_file(self, url: str, target: Path) -> tuple[str, int]:
         hasher = hashlib.sha256()
@@ -123,3 +212,19 @@ class AssetManager:
         if len(suffix) == 2 and suffix[1]:
             return suffix[1].lower()
         return default
+
+    @staticmethod
+    def _hash_file(path: Path) -> tuple[str, int]:
+        hasher = hashlib.sha256()
+        bytes_written = 0
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(8192), b""):
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                bytes_written += len(chunk)
+
+        if bytes_written == 0:
+            raise AssetDownloadError(f"Downloaded file {path} is empty")
+
+        return hasher.hexdigest(), bytes_written

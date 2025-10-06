@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import re
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from . import ArticleParser, ParsedArticle, ParsedAsset, AssetType, ParsingError, ensure_asset_sequence
 
@@ -80,36 +80,13 @@ class ThanhnienParser(ArticleParser):
             tags = [tag.get_text(strip=True) for tag in tag_section.find_all("a") if tag.get_text(strip=True)]
 
         assets = []
-        media_blocks = content_container.find_all("figure") if content_container else []
         sequence = 1
-        for block in media_blocks:
-            img = block.find("img")
-            if img and img.get("src"):
-                caption = None
-                caption_tag = block.find("figcaption")
-                if caption_tag:
-                    caption = caption_tag.get_text(strip=True) or None
-                assets.append(
-                    ParsedAsset(
-                        source_url=img["src"],
-                        asset_type=AssetType.IMAGE,
-                        sequence=sequence,
-                        caption=caption,
-                    )
-                )
-                sequence += 1
-                continue
-
-            video = block.find("video")
-            if video and video.get("src"):
-                assets.append(
-                    ParsedAsset(
-                        source_url=video["src"],
-                        asset_type=AssetType.VIDEO,
-                        sequence=sequence,
-                    )
-                )
-                sequence += 1
+        if content_container is not None:
+            for block in content_container.find_all(["figure", "div"], recursive=True):
+                if block.name == "figure":
+                    sequence = self._extract_figure_asset(block, assets, sequence)
+                elif block.name == "div":
+                    sequence = self._extract_stream_asset(block, assets, sequence)
 
         structured_assets = ensure_asset_sequence(assets)
 
@@ -170,3 +147,77 @@ class ThanhnienParser(ArticleParser):
             dt = dt.replace(tzinfo=tzinfo)
 
         return dt
+
+    def _extract_figure_asset(self, block: Tag, assets: list[ParsedAsset], sequence: int) -> int:
+        img = block.find("img")
+        if img and img.get("src"):
+            caption = None
+            caption_tag = block.find("figcaption")
+            if caption_tag:
+                caption = caption_tag.get_text(strip=True) or None
+            source_url = self._normalize_media_url(img["src"])
+            if source_url:
+                assets.append(
+                    ParsedAsset(
+                        source_url=source_url,
+                        asset_type=AssetType.IMAGE,
+                        sequence=sequence,
+                        caption=caption,
+                    )
+                )
+                return sequence + 1
+
+        video = block.find("video")
+        if video and video.get("src"):
+            source_url = self._normalize_media_url(video["src"])
+            if source_url and not source_url.startswith("blob:"):
+                assets.append(
+                    ParsedAsset(
+                        source_url=source_url,
+                        asset_type=AssetType.VIDEO,
+                        sequence=sequence,
+                    )
+                )
+                return sequence + 1
+
+        return sequence
+
+    def _extract_stream_asset(self, block: Tag, assets: list[ParsedAsset], sequence: int) -> int:
+        if block.attrs.get("type") != "VideoStream":
+            return sequence
+
+        data_vid = block.attrs.get("data-vid") or block.attrs.get("data-src")
+        source_url = self._normalize_media_url(data_vid) if data_vid else None
+
+        if not source_url:
+            return sequence
+
+        assets.append(
+            ParsedAsset(
+                source_url=source_url,
+                asset_type=AssetType.VIDEO,
+                sequence=sequence,
+                caption=self._extract_stream_caption(block),
+            )
+        )
+        return sequence + 1
+
+    def _extract_stream_caption(self, block: Tag) -> str | None:
+        caption_container = block.find(class_="VideoCMS_Caption")
+        if caption_container:
+            text = caption_container.get_text(strip=True)
+            return text or None
+        return None
+
+    @staticmethod
+    def _normalize_media_url(raw_url: str | None) -> str | None:
+        if raw_url is None:
+            return None
+        url = raw_url.strip()
+        if not url or url.startswith("blob:"):
+            return None
+        if url.startswith("//"):
+            return f"https:{url}"
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        return f"https://{url.lstrip('/')}"

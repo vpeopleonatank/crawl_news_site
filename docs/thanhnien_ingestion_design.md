@@ -70,7 +70,7 @@
 - Module: `crawler/ingest_thanhnien.py`
 - CLI Example:
   ```bash
-  # add --rerun if interrupt from previous run
+  # add --resume if interrupt from previous run
   python -m crawler.ingest_thanhnien \
       --jobs-file data/thanhnien_jobs.ndjson \
       --storage-root storage \
@@ -83,6 +83,7 @@
   3. Each worker executes Fetcher → Parser → Asset Pipeline → Persistence
   4. Collect metrics (success/fail counts, duration) printed at end
 - Supports `--resume` flag to skip jobs already marked success in state store.
+- Proxy controls: configure `--proxy ip:port[:key]` plus `--proxy-change-url`/`--proxy-key` to rotate after block responses; rotation calls throttle to 240s by default.
 
 ## Data Storage Layout
 - `storage/raw/{article_uuid}.html` (optional)
@@ -105,6 +106,7 @@
   - `request_timeout`, `asset_timeout`
   - `respect_robots` flag (future work)
   - `raw_html_cache_enabled`
+- Proxy configuration (proxy endpoint, rotation API URL, minimum rotation interval).
 - Config overrides via CLI flags for quick experimentation.
 
 ## Testing Strategy

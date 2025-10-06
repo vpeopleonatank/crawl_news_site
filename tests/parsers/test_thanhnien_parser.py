@@ -54,6 +54,34 @@ class ThanhnienParserTestCase(unittest.TestCase):
         with self.assertRaises(ParsingError):
             self.parser.parse("https://thanhnien.vn/bai-viet/khong-title.htm", html)
 
+    def test_parse_stream_video_container(self) -> None:
+        html = """
+        <html>
+            <body>
+                <h1>Video Article</h1>
+                <div data-role="content">
+                    <p>Nội dung bài viết.</p>
+                    <div class="VCSortableInPreviewMode" type="VideoStream" data-vid="thanhnien.mediacdn.vn/video/sample.mp4">
+                        <div class="VideoCMS_Caption">
+                            <p>Video caption</p>
+                        </div>
+                    </div>
+                </div>
+            </body>
+        </html>
+        """
+
+        result = self.parser.parse(
+            "https://thanhnien.vn/bai-viet/video-article.htm",
+            html,
+        )
+
+        self.assertEqual(len(result.assets), 1)
+        asset = result.assets[0]
+        self.assertEqual(asset.asset_type, AssetType.VIDEO)
+        self.assertEqual(asset.source_url, "https://thanhnien.mediacdn.vn/video/sample.mp4")
+        self.assertEqual(asset.caption, "Video caption")
+
 
 if __name__ == "__main__":
     unittest.main()
