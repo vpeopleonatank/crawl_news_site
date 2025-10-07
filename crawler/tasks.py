@@ -1,0 +1,98 @@
+"""Celery tasks for asynchronous asset downloading."""
+
+from __future__ import annotations
+
+import logging
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+from celery import Task
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from .assets import (
+    AssetDownloadError,
+    AssetManager,
+    assets_from_payload,
+)
+from .celery_app import celery_app
+from .config import IngestConfig, ProxyConfig, TimeoutConfig
+from .persistence import ArticlePersistence, ArticlePersistenceError
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
+    storage_root = Path(config_payload["storage_root"])
+    timeout = TimeoutConfig(
+        request_timeout=float(config_payload.get("request_timeout", TimeoutConfig().request_timeout)),
+        asset_timeout=float(config_payload.get("asset_timeout", TimeoutConfig().asset_timeout)),
+    )
+
+    config = IngestConfig(
+        storage_root=storage_root,
+        user_agent=str(config_payload.get("user_agent", IngestConfig().user_agent)),
+        timeout=timeout,
+    )
+
+    proxy_payload = config_payload.get("proxy")
+    if isinstance(proxy_payload, Mapping) and proxy_payload:
+        config.proxy = ProxyConfig(
+            scheme=str(proxy_payload.get("scheme", "http")),
+            host=proxy_payload.get("host"),
+            port=proxy_payload.get("port"),
+            api_key=proxy_payload.get("api_key"),
+            change_ip_url=proxy_payload.get("change_ip_url"),
+            min_rotation_interval=float(
+                proxy_payload.get(
+                    "min_rotation_interval",
+                    ProxyConfig().min_rotation_interval,
+                )
+            ),
+        )
+
+    config.ensure_directories()
+    return config
+
+
+@lru_cache(maxsize=8)
+def _session_factory(db_url: str):
+    engine = create_engine(db_url)
+    return sessionmaker(bind=engine)
+
+
+@celery_app.task(name="crawler.download_assets", bind=True, autoretry_for=(Exception,), retry_backoff=True)
+def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
+    article_id = str(job["article_id"])
+    assets_payload = job.get("assets", [])
+    if not assets_payload:
+        LOGGER.info("No assets to download for article %s", article_id)
+        return {"status": "skipped", "reason": "no_assets"}
+
+    try:
+        config = _build_config(job["config"])
+        db_url = str(job["db_url"])
+        session_factory = _session_factory(db_url)
+        assets = assets_from_payload(assets_payload)
+
+        with AssetManager(config) as manager:
+            stored_assets = manager.download_assets(article_id, assets)
+
+        persistence = ArticlePersistence(session_factory=session_factory, storage_root=config.storage_root)
+        persistence.persist_assets(article_id, stored_assets)
+
+        LOGGER.info(
+            "Downloaded %d assets for article %s", len(stored_assets), article_id
+        )
+        return {"status": "ok", "assets": len(stored_assets)}
+    except (AssetDownloadError, ArticlePersistenceError) as exc:
+        LOGGER.exception("Download task failed for article %s", article_id)
+        raise self.retry(exc=exc)
+    except Exception as exc:  # pragma: no cover - unexpected failure
+        LOGGER.exception("Unexpected error in download task for article %s", article_id)
+        raise exc
+
+
+__all__ = ["download_assets_task"]

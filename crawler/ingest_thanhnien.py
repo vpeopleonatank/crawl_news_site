@@ -14,7 +14,7 @@ from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from .assets import AssetDownloadError, AssetManager
+from .assets import assets_to_payload
 from .config import IngestConfig, ProxyConfig
 from .http_client import HttpFetchError, HttpFetcher
 from .jobs import NDJSONJobLoader, load_existing_urls
@@ -25,6 +25,7 @@ from .playwright_support import (
     PlaywrightVideoResolverError,
     ThanhnienVideoResolver,
 )
+from .tasks import download_assets_task
 
 LOGGER = logging.getLogger(__name__)
 _FETCH_FAILURE_LOG = "fetch_failures.ndjson"
@@ -171,6 +172,44 @@ def _update_video_assets_with_playwright(
             asset.source_url = hls_url
 
 
+def _build_task_payload(config: IngestConfig, article_id: str, assets: list[ParsedAsset]) -> dict:
+    payload = {
+        "article_id": article_id,
+        "db_url": config.db_url,
+        "assets": assets_to_payload(assets),
+        "config": {
+            "storage_root": str(config.storage_root),
+            "user_agent": config.user_agent,
+            "request_timeout": config.timeout.request_timeout,
+            "asset_timeout": config.timeout.asset_timeout,
+        },
+    }
+
+    if config.proxy:
+        payload["config"]["proxy"] = {
+            "scheme": config.proxy.scheme,
+            "host": config.proxy.host,
+            "port": config.proxy.port,
+            "api_key": config.proxy.api_key,
+            "change_ip_url": config.proxy.change_ip_url,
+            "min_rotation_interval": config.proxy.min_rotation_interval,
+        }
+
+    return payload
+
+
+def _enqueue_asset_downloads(config: IngestConfig, article_id: str, assets: list[ParsedAsset]) -> None:
+    if not assets:
+        return
+
+    if not config.db_url:
+        raise ValueError("Database URL is required to enqueue asset downloads")
+
+    task_payload = _build_task_payload(config, article_id, assets)
+    download_assets_task.delay(task_payload)
+    LOGGER.info("Queued %d assets for article %s", len(assets), article_id)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     configure_logging()
     parser = build_arg_parser()
@@ -205,8 +244,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     with ExitStack() as stack:
         fetcher = stack.enter_context(HttpFetcher(config))
-        asset_manager = stack.enter_context(AssetManager(config))
-
         video_resolver: ThanhnienVideoResolver | None = None
         if config.playwright_enabled:
             try:
@@ -237,12 +274,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if config.playwright_enabled and video_resolver:
                     _update_video_assets_with_playwright(video_resolver, job.url, parsed.assets)
 
-                if parsed.assets:
-                    stored_assets = asset_manager.download_assets(article_id, parsed.assets)
-                    persistence.persist_assets(article_id, stored_assets)
+                _enqueue_asset_downloads(config, article_id, parsed.assets)
 
                 stats.succeeded += 1
-            except (HttpFetchError, ParsingError, AssetDownloadError, ArticlePersistenceError) as exc:
+            except (HttpFetchError, ParsingError, ArticlePersistenceError) as exc:
                 stats.failed += 1
                 LOGGER.error("Failed to process %s: %s", job.url, exc)
                 if isinstance(exc, HttpFetchError):

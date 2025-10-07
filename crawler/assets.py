@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 import httpx
@@ -228,3 +228,38 @@ class AssetManager:
             raise AssetDownloadError(f"Downloaded file {path} is empty")
 
         return hasher.hexdigest(), bytes_written
+
+
+def asset_to_payload(asset: ParsedAsset) -> dict[str, str | int | None]:
+    """Serialize a parsed asset into a queue-friendly payload."""
+
+    return {
+        "source_url": asset.source_url,
+        "asset_type": asset.asset_type.value,
+        "sequence": asset.sequence,
+        "caption": asset.caption,
+    }
+
+
+def assets_to_payload(assets: Sequence[ParsedAsset]) -> list[dict[str, str | int | None]]:
+    """Serialize a sequence of parsed assets."""
+
+    return [asset_to_payload(asset) for asset in ensure_asset_sequence(assets)]
+
+
+def asset_from_payload(payload: Mapping[str, object]) -> ParsedAsset:
+    """Reconstruct a ParsedAsset instance from serialized payload."""
+
+    return ParsedAsset(
+        source_url=str(payload["source_url"]),
+        asset_type=AssetType(payload["asset_type"]),
+        sequence=int(payload["sequence"]),
+        caption=payload.get("caption") or None,
+    )
+
+
+def assets_from_payload(payloads: Sequence[Mapping[str, object]]) -> list[ParsedAsset]:
+    """Reconstruct a sorted ParsedAsset list from serialized payloads."""
+
+    reconstructed = [asset_from_payload(item) for item in payloads]
+    return ensure_asset_sequence(reconstructed)
