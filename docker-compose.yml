@@ -5,12 +5,12 @@ services:
     image: postgres:16-alpine
     container_name: crawl_db
     environment:
-      POSTGRES_USER: crawl_user
-      POSTGRES_PASSWORD: crawl_password
-      POSTGRES_DB: crawl_db
+      POSTGRES_USER: ${POSTGRES_USER:-crawl_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crawl_password}
+      POSTGRES_DB: ${POSTGRES_DB:-crawl_db}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8"
     ports:
-      - "5433:5432"
+      - "${HOST_POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -26,11 +26,11 @@ services:
     image: dpage/pgadmin4:latest
     container_name: crawl_pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@admin.com
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@admin.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
       PGADMIN_CONFIG_SERVER_MODE: 'False'
     ports:
-      - "5050:80"
+      - "${PGADMIN_PORT:-5050}:80"
     depends_on:
       - postgres
     networks:
@@ -38,18 +38,44 @@ services:
     volumes:
       - pgadmin_data:/var/lib/pgadmin
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: crawl_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-crawler}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-crawler_password}
+    ports:
+      - "${HOST_RABBITMQ_PORT:-5672}:5672"
+      - "${HOST_RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - crawl_network
+
   test_app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: crawl_test_app
     environment:
-      DATABASE_URL: postgresql://crawl_user:crawl_password@postgres:5432/crawl_db
+      DATABASE_URL: ${DATABASE_URL:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      CRAWLER_DATABASE_URL: ${CRAWLER_DATABASE_URL:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      CRAWLER_CELERY_BROKER_URL: ${CRAWLER_CELERY_BROKER_URL:-amqp://crawler:crawler_password@rabbitmq:5672//}
+      CRAWLER_CELERY_RESULT_BACKEND: ${CRAWLER_CELERY_RESULT_BACKEND:-db+postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      CRAWLER_CELERY_TASK_ALWAYS_EAGER: ${CRAWLER_CELERY_TASK_ALWAYS_EAGER:-False}
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     volumes:
       - ./:/app
+      - ./storage:/app/storage
     command: python test_models.py
     networks:
       - crawl_network
@@ -57,6 +83,7 @@ services:
 volumes:
   postgres_data:
   pgadmin_data:
+  rabbitmq_data:
 
 networks:
   crawl_network:

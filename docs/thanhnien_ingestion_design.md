@@ -19,9 +19,10 @@
 1. **Job Loader** reads NDJSON stream and emits crawl jobs that pass dedupe checks.
 2. **Fetcher** downloads article HTML with retry/backoff and validates content type and response codes.
 3. **Parser** (Thanhnien-specific) extracts structured fields (title, description, publish date, body blocks, tags, category, embedded media URLs, comments snapshot).
-4. **Asset Pipeline** downloads referenced images and videos, normalises file formats, and stores them under a predictable directory keyed by the article UUID and media sequence.
+4. **Asset Pipeline** packages referenced media into Celery jobs and defers heavy downloads to a dedicated worker so ingestion remains snappy.
 5. **Persistence Layer** upserts the article metadata and associated media paths into PostgreSQL through SQLAlchemy models, handling transactions and sequence numbering.
 6. **Bookkeeping** records crawl status, failures, and asset hashes to support reruns without duplicate work.
+7. **Celery Worker** consumes queued asset jobs, performs the actual downloads, and finalises persistence.
 
 ## Component Design
 
@@ -50,12 +51,16 @@
 - Inputs: `ParsedAsset` list and article UUID.
 - Steps:
   1. Filter out inline data URIs or duplicates (based on URL or content hash).
-  2. Download binary content with streaming requests and 30s timeout.
-  3. Detect MIME type (via `python-magic`) and map to file extension.
-  4. Resize/convert images if required (e.g., keep original, optionally produce web-optimized copy later).
-  5. Write to `storage/articles/{article_uuid}/images/{sequence:03d}.{ext}` or `/videos/{sequence:03d}.{ext}`.
-  6. Compute checksum (SHA256) and byte size while streaming to disk; surface these in the stored asset metadata for audit and persistence layers.
-- Returns `ArticleImage` / `ArticleVideo` SQLAlchemy instances with populated `image_path`/`video_path` relative to `storage/articles/` base, alongside optional checksum/size columns when schema expands.
+  2. Serialize assets into queue payloads (`assets_to_payload`) and enqueue them via Celery so the downloader can run out-of-process.
+  3. Worker side (see §4.1) resolves manifests, streams binaries with 30s timeout, and writes to deterministic paths.
+  4. Compute checksum (SHA256) and byte size while streaming to disk; surface these in the stored asset metadata for audit and persistence layers.
+- Returns `ArticleImage` / `ArticleVideo` rows via the worker, keeping the ingestion loop fast and fault-tolerant.
+
+#### 4.1 Celery Download Task
+- Module: `crawler/tasks.py`
+- Task name: `crawler.download_assets`
+- Executes the former synchronous `AssetManager.download_assets` logic with retry/backoff, persists results through `ArticlePersistence.persist_assets`, and reports status for monitoring.
+- Runs with database-backed broker/result store so tasks survive worker restarts.
 
 ### 5. Persistence Layer
 - Module: `crawler/persistence.py`
@@ -81,8 +86,8 @@
 - Orchestrates worker pool:
   1. Load jobs
   2. Submit to worker threads (ThreadPool for I/O bound tasks)
-  3. Each worker executes Fetcher → Parser → Asset Pipeline → Persistence
-  4. Collect metrics (success/fail counts, duration) printed at end
+  3. Each worker executes Fetcher → Parser → enqueue asset download tasks
+  4. Collect metrics (success/fail counts, duration) printed at end while asset downloads continue asynchronously
 - Supports `--resume` flag to skip jobs already marked success in state store.
 - Proxy controls: configure `--proxy ip:port[:key]` plus `--proxy-change-url`/`--proxy-key` to rotate after block responses; rotation calls throttle to 240s by default.
 
@@ -122,12 +127,33 @@
 ## Operational Considerations
 - Rate limiting: default concurrency of 4, per-domain delay (500ms) to be a good citizen.
 - Idempotency: job key is article URL; successful runs mark job complete so reruns skip quickly.
-- Backpressure: if asset download fails, mark job partial and retry later rather than committing incomplete article.
+- Backpressure: asset download failures cause the Celery task to retry with exponential backoff; ingestion logs the queue submission so operators can correlate.
 - Disk usage monitoring: optional CLI flag `--max-bytes-per-article` to warn if asset payload exceeds quota.
 
+## Running with Celery, RabbitMQ, and PostgreSQL
+- Copy `.env.sample` to `.env` (tweak values as needed) so Docker Compose can inject service credentials and URLs.
+- Set `CRAWLER_DATABASE_URL` to the same SQLAlchemy DSN used by ingestion (e.g., `postgresql://crawl_user:crawl_password@postgres:5432/crawl_db` when running inside Docker). The Celery app will derive both broker (`sqla+...`) and result backend (`db+...`) from it automatically if overrides are not provided.
+- Install requirements: `pip install -r requirements.txt` (ensure `ffmpeg` is available on the PATH for HLS downloads).
+- Start a worker:
+  ```bash
+  docker compose run --rm test_app \
+    python -m celery -A crawler.celery_app worker --loglevel=info
+  ```
+- When running via Docker Compose use service hostnames (e.g., `postgres`, `rabbitmq`) and bind mount `./storage:/app/storage` so downloaded assets persist on the host.
+- Launch the ingestion CLI in a separate process; asset downloads will be processed asynchronously by the worker:
+  ```bash
+  docker compose run --rm test_app \
+    python -m crawler.ingest_thanhnien \
+      --jobs-file data/thanhnien_jobs.ndjson \
+      --storage-root /app/storage \
+      --max-workers 4 \
+      --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db
+  ```
+- To clear outstanding jobs, purge the queue via `docker compose exec rabbitmq rabbitmqctl purge_queue celery` before re-running ingestion.
+
 ## Next Implementation Steps
-1. Scaffold modules (`jobs`, `http_client`, `parsers`, `assets`, `persistence`, `ingest_thanhnien`).
+1. Validate Celery queue behaviour with integration tests that enqueue fake assets and assert persistence.
 2. Implement parser with fixtures and tests.
-3. Build asset downloader with streaming writes and checksum support.
+3. Expand asset downloader coverage with streaming mocks and failure handling cases.
 4. Wire orchestrator CLI and add integration test hitting recorded fixtures.
-5. Extend docker-compose workflow to run ingestion end-to-end against a sample job list.
+5. Extend docker-compose workflow to run ingestion end-to-end against a sample job list with the worker running alongside.
