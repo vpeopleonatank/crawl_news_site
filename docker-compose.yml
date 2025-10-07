@@ -76,6 +76,7 @@ services:
     volumes:
       - ./:/app
       - ./storage:/app/storage
+      - ./data:/app/data
     command: python test_models.py
     networks:
       - crawl_network
