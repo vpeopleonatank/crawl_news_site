@@ -26,6 +26,7 @@ from .playwright_support import (
     ThanhnienVideoResolver,
 )
 from .tasks import download_assets_task
+from models import Base
 
 LOGGER = logging.getLogger(__name__)
 _FETCH_FAILURE_LOG = "fetch_failures.ndjson"
@@ -224,6 +225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--db-url is required")
 
     engine = create_engine(config.db_url)
+    Base.metadata.create_all(engine)  # ensure required tables exist before queries
     SessionLocal = sessionmaker(bind=engine)
 
     existing_urls: set[str] = set()

@@ -157,3 +157,7 @@
 3. Expand asset downloader coverage with streaming mocks and failure handling cases.
 4. Wire orchestrator CLI and add integration test hitting recorded fixtures.
 5. Extend docker-compose workflow to run ingestion end-to-end against a sample job list with the worker running alongside.
+
+## Improvement
+- **Ingestion concurrency**: the CLI now drives a worker pool via `config.rate_limit.max_workers`; profile queue depth and tune per-domain throttling if the upstream site starts blocking parallel fetches.
+- **Playwright isolation**: HLS manifest resolution remains in-line with ingestion, so a single slow video blocks the whole run. Offload Playwright lookups to a separate queue or background worker so the main loop keeps advancing.
