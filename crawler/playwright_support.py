@@ -18,6 +18,8 @@ class ThanhnienVideoResolver:
     def __init__(self, *, headless: bool = True, timeout: float = 30.0) -> None:
         self._headless = headless
         self._timeout_ms = int(timeout * 1000)
+        # Keep a short settle window after DOM load so we observe manifest requests without stalling the crawl.
+        self._settle_timeout_ms = min(self._timeout_ms, 5000)
         self._playwright_cm = None
         self._playwright = None
         self._browser = None
@@ -81,11 +83,8 @@ class ThanhnienVideoResolver:
 
         page.on("response", handle_response)
         try:
-            page.goto(article_url, wait_until="load", timeout=self._timeout_ms)
-            try:
-                page.wait_for_load_state("networkidle", timeout=self._timeout_ms)
-            except self._timeout_error_cls:  # pragma: no cover - graceful fallback
-                page.wait_for_timeout(1000)
+            page.goto(article_url, wait_until="domcontentloaded", timeout=self._timeout_ms)
+            page.wait_for_timeout(self._settle_timeout_ms)
         except self._timeout_error_cls as exc:
             raise PlaywrightVideoResolverError(f"Timed out while loading {article_url}") from exc
         finally:

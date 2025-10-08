@@ -18,14 +18,10 @@ from .assets import assets_to_payload
 from .config import IngestConfig, ProxyConfig
 from .http_client import HttpFetchError, HttpFetcher
 from .jobs import NDJSONJobLoader, load_existing_urls
-from .parsers import AssetType, ParsedAsset, ParsingError
+from .parsers import ParsedAsset, ParsingError
 from .parsers.thanhnien import ThanhnienParser
 from .persistence import ArticlePersistence, ArticlePersistenceError
-from .playwright_support import (
-    PlaywrightVideoResolverError,
-    ThanhnienVideoResolver,
-)
-from .tasks import download_assets_task
+from .tasks import download_assets_task, resolve_video_assets_task
 from models import Base
 
 LOGGER = logging.getLogger(__name__)
@@ -144,39 +140,11 @@ def _record_fetch_failure(config: IngestConfig, job: ArticleJob, exc: Exception)
         )
 
 
-def _update_video_assets_with_playwright(
-    resolver: ThanhnienVideoResolver | None,
-    article_url: str,
-    assets: list[ParsedAsset],
-) -> None:
-    if resolver is None:
-        return
-
-    video_assets = [asset for asset in assets if asset.asset_type == AssetType.VIDEO]
-    if not video_assets:
-        return
-
-    try:
-        streams = resolver.resolve_streams(article_url)
-    except PlaywrightVideoResolverError as exc:
-        LOGGER.warning("Playwright failed to resolve video streams for %s: %s", article_url, exc)
-        return
-
-    if not streams:
-        LOGGER.debug("No video manifests detected for %s via Playwright", article_url)
-        return
-
-    for asset, stream in zip(video_assets, streams):
-        hls_url = stream.get("hls") or stream.get("mhls")
-        if hls_url:
-            LOGGER.debug("Resolved HLS manifest %s for %s", hls_url, article_url)
-            asset.source_url = hls_url
-
-
-def _build_task_payload(config: IngestConfig, article_id: str, assets: list[ParsedAsset]) -> dict:
+def _build_task_payload(config: IngestConfig, article_id: str, article_url: str, assets: list[ParsedAsset]) -> dict:
     payload = {
         "article_id": article_id,
         "db_url": config.db_url,
+        "article_url": article_url,
         "assets": assets_to_payload(assets),
         "config": {
             "storage_root": str(config.storage_root),
@@ -196,18 +164,32 @@ def _build_task_payload(config: IngestConfig, article_id: str, assets: list[Pars
             "min_rotation_interval": config.proxy.min_rotation_interval,
         }
 
+    if config.playwright_enabled:
+        payload["playwright"] = {
+            "timeout": config.playwright_timeout,
+        }
+
     return payload
 
 
-def _enqueue_asset_downloads(config: IngestConfig, article_id: str, assets: list[ParsedAsset]) -> None:
+def _enqueue_asset_downloads(
+    config: IngestConfig,
+    article_id: str,
+    article_url: str,
+    assets: list[ParsedAsset],
+) -> None:
     if not assets:
         return
 
     if not config.db_url:
         raise ValueError("Database URL is required to enqueue asset downloads")
 
-    task_payload = _build_task_payload(config, article_id, assets)
-    download_assets_task.delay(task_payload)
+    task_payload = _build_task_payload(config, article_id, article_url, assets)
+    if config.playwright_enabled:
+        pipeline = resolve_video_assets_task.s(task_payload) | download_assets_task.s()
+        pipeline.delay()
+    else:
+        download_assets_task.delay(task_payload)
     LOGGER.info("Queued %d assets for article %s", len(assets), article_id)
 
 
@@ -246,16 +228,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     with ExitStack() as stack:
         fetcher = stack.enter_context(HttpFetcher(config))
-        video_resolver: ThanhnienVideoResolver | None = None
-        if config.playwright_enabled:
-            try:
-                video_resolver = stack.enter_context(
-                    ThanhnienVideoResolver(timeout=config.playwright_timeout)
-                )
-            except PlaywrightVideoResolverError as exc:
-                LOGGER.error("Unable to initialize Playwright resolver: %s", exc)
-                video_resolver = None
-
         for job in job_loader:
             stats.processed += 1
             LOGGER.info("Processing article %s", job.url)
@@ -273,10 +245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if config.raw_html_cache_enabled:
                     persist_raw_html(config, article_id, html)
 
-                if config.playwright_enabled and video_resolver:
-                    _update_video_assets_with_playwright(video_resolver, job.url, parsed.assets)
-
-                _enqueue_asset_downloads(config, article_id, parsed.assets)
+                _enqueue_asset_downloads(config, article_id, job.url, parsed.assets)
 
                 stats.succeeded += 1
             except (HttpFetchError, ParsingError, ArticlePersistenceError) as exc:

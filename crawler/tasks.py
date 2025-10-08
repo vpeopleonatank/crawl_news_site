@@ -15,10 +15,16 @@ from .assets import (
     AssetDownloadError,
     AssetManager,
     assets_from_payload,
+    assets_to_payload,
 )
 from .celery_app import celery_app
 from .config import IngestConfig, ProxyConfig, TimeoutConfig
 from .persistence import ArticlePersistence, ArticlePersistenceError
+from .parsers import AssetType
+from .playwright_support import (
+    PlaywrightVideoResolverError,
+    ThanhnienVideoResolver,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -63,6 +69,57 @@ def _session_factory(db_url: str):
     return sessionmaker(bind=engine)
 
 
+@celery_app.task(name="crawler.resolve_video_assets", bind=True, autoretry_for=(Exception,), retry_backoff=True)
+def resolve_video_assets_task(self: Task, job: Mapping[str, Any]) -> Mapping[str, Any]:
+    article_id = str(job["article_id"])
+    article_url = job.get("article_url")
+    assets_payload = job.get("assets") or []
+
+    if not article_url or not assets_payload:
+        LOGGER.debug("Resolver skipped for article %s due to missing URL/assets", article_id)
+        return job
+
+    assets = assets_from_payload(assets_payload)
+    video_assets = [asset for asset in assets if asset.asset_type == AssetType.VIDEO]
+    if not video_assets:
+        LOGGER.debug("No video assets for article %s; skipping Playwright resolution", article_id)
+        return job
+
+    timeout = IngestConfig().playwright_timeout
+    playwright_cfg = job.get("playwright") or {}
+    try:
+        timeout = float(playwright_cfg.get("timeout", timeout))
+    except (TypeError, ValueError):
+        LOGGER.debug("Invalid Playwright timeout %r; falling back to default %s", playwright_cfg.get("timeout"), timeout)
+
+    try:
+        with ThanhnienVideoResolver(timeout=timeout) as resolver:
+            streams = resolver.resolve_streams(article_url)
+    except PlaywrightVideoResolverError as exc:
+        LOGGER.warning("Playwright failed to resolve streams for article %s: %s", article_id, exc)
+        return job
+
+    if not streams:
+        LOGGER.debug("Playwright returned no streams for article %s", article_id)
+        return job
+
+    updated = False
+    for asset, stream in zip(video_assets, streams):
+        hls_url = stream.get("hls") or stream.get("mhls")
+        if hls_url and hls_url != asset.source_url:
+            asset.source_url = hls_url
+            updated = True
+
+    if updated:
+        LOGGER.info("Updated video assets for article %s via Playwright", article_id)
+        job = dict(job)
+        job["assets"] = assets_to_payload(assets)
+    else:
+        LOGGER.debug("No video asset changes for article %s after Playwright resolution", article_id)
+
+    return job
+
+
 @celery_app.task(name="crawler.download_assets", bind=True, autoretry_for=(Exception,), retry_backoff=True)
 def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
     article_id = str(job["article_id"])
@@ -95,4 +152,4 @@ def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
         raise exc
 
 
-__all__ = ["download_assets_task"]
+__all__ = ["resolve_video_assets_task", "download_assets_task"]
