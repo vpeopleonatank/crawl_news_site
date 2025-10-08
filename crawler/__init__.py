@@ -1,4 +1,4 @@
-"""Crawler utilities for ThanhNien.vn."""
+"""Crawler utilities for the news ingestion pipeline."""
 
 from .sitemap_backfill import SitemapCrawler, crawl_sitemaps
 

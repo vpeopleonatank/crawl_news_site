@@ -1,4 +1,4 @@
-"""Configuration utilities for the Thanhnien ingestion pipeline."""
+"""Configuration utilities shared by all ingestion pipelines."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_JOBS_FILE = Path("data/thanhnien_jobs.ndjson")
+DEFAULT_JOBS_FILE = Path("data/jobs.ndjson")
 DEFAULT_STORAGE_ROOT = Path("storage")
 DEFAULT_LOG_DIR = DEFAULT_STORAGE_ROOT / "logs"
 
-DEFAULT_USER_AGENT = "thanhnien-ingestor/1.0"
+DEFAULT_USER_AGENT = "article-ingestor/1.0"
 
 
 @dataclass(slots=True)

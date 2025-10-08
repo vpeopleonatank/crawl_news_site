@@ -1,4 +1,4 @@
-"""Job management utilities for Thanhnien ingestion."""
+"""Job management utilities for article ingestion."""
 
 from __future__ import annotations
 

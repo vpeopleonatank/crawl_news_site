@@ -72,11 +72,12 @@
   - Record crawl metadata (fetch timestamp, HTTP status) in `Article.comments` JSON for traceability.
 
 ### 6. Orchestrator / CLI
-- Module: `crawler/ingest_thanhnien.py`
+- Module: `crawler/ingest.py` (multi-site entrypoint; `crawler/ingest_thanhnien.py` wraps it for compatibility)
 - CLI Example:
   ```bash
   # add --resume if interrupt from previous run
-  python -m crawler.ingest_thanhnien \
+  python -m crawler.ingest \
+      --site thanhnien \
       --jobs-file data/thanhnien_jobs.ndjson \
       --storage-root storage \
       --max-workers 4 \
@@ -143,7 +144,8 @@
 - Launch the ingestion CLI in a separate process; asset downloads will be processed asynchronously by the worker:
   ```bash
   docker compose run --rm test_app \
-    python -m crawler.ingest_thanhnien \
+    python -m crawler.ingest \
+      --site thanhnien \
       --jobs-file data/thanhnien_jobs.ndjson \
       --storage-root /app/storage \
       --max-workers 4 \

@@ -1,3 +1,4 @@
+import argparse
 import json
 import unittest
 from pathlib import Path
@@ -5,10 +6,16 @@ from tempfile import TemporaryDirectory
 
 from crawler.config import IngestConfig
 from crawler.http_client import HttpFetchError
-from crawler.ingest_thanhnien import _record_fetch_failure, _update_video_assets_with_playwright
+from crawler.ingest_thanhnien import (
+    _build_task_payload,
+    _record_fetch_failure,
+    _update_video_assets_with_playwright,
+    build_config as build_thanhnien_config,
+)
 from crawler.jobs import ArticleJob
 from crawler.parsers import AssetType, ParsedAsset
 from crawler.playwright_support import PlaywrightVideoResolverError
+from crawler.sites import get_site_definition
 
 
 class DummyResolver:
@@ -93,6 +100,59 @@ class RecordFetchFailureTestCase(unittest.TestCase):
             self.assertEqual(payload["url"], job.url)
             self.assertEqual(payload["error"], str(error))
             self.assertEqual(payload["error_type"], "HttpFetchError")
+
+
+class ThanhnienConfigTestCase(unittest.TestCase):
+    def test_build_config_defaults_site_settings(self) -> None:
+        site = get_site_definition("thanhnien")
+        with TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir) / "storage"
+            args = argparse.Namespace(
+                site="thanhnien",
+                jobs_file=None,
+                storage_root=storage_root,
+                db_url="postgresql://user:pass@localhost/db",
+                resume=False,
+                raw_html_cache=False,
+                proxy=None,
+                proxy_change_url=None,
+                proxy_key=None,
+                proxy_scheme="http",
+                proxy_rotation_interval=240.0,
+                max_workers=4,
+                use_playwright=False,
+                playwright_timeout=30.0,
+            )
+
+            config = build_thanhnien_config(args)
+
+            self.assertEqual(config.jobs_file, site.default_jobs_file)
+            self.assertEqual(config.user_agent, site.default_user_agent)
+
+
+class BuildTaskPayloadTestCase(unittest.TestCase):
+    def test_payload_includes_site_slug(self) -> None:
+        site = get_site_definition("thanhnien")
+        config = IngestConfig(
+            jobs_file=site.default_jobs_file,
+            storage_root=Path("storage"),
+            db_url="postgresql://user:pass@localhost/db",
+            user_agent=site.default_user_agent,
+        )
+        assets = [
+            ParsedAsset(source_url="https://example.com/image.jpg", asset_type=AssetType.IMAGE, sequence=1),
+        ]
+
+        payload = _build_task_payload(
+            config,
+            site,
+            "article-123",
+            "https://example.com/article",
+            assets,
+            include_playwright=False,
+        )
+
+        self.assertEqual(payload["site"], site.slug)
 
 
 if __name__ == "__main__":

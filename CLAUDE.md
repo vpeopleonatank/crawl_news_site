@@ -80,7 +80,8 @@ docker compose exec postgres psql -U crawl_user -d crawl_db
 ```bash
 # Standard ingestion with Celery worker
 docker compose run --rm test_app \
-  python -m crawler.ingest_thanhnien \
+  python -m crawler.ingest \
+    --site thanhnien \
     --jobs-file data/thanhnien_jobs.ndjson \
     --storage-root /app/storage \
     --max-workers 4 \
@@ -88,22 +89,22 @@ docker compose run --rm test_app \
 
 # With resume (skip existing URLs)
 docker compose run --rm test_app \
-  python -m crawler.ingest_thanhnien \
-    --jobs-file data/thanhnien_jobs.ndjson \
+  python -m crawler.ingest \
+    --site thanhnien \
     --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
     --resume
 
 # Enable Playwright for HLS video manifest resolution
 docker compose run --rm test_app \
-  python -m crawler.ingest_thanhnien \
-    --jobs-file data/thanhnien_jobs.ndjson \
+  python -m crawler.ingest \
+    --site thanhnien \
     --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
     --use-playwright
 
 # With proxy rotation
 docker compose run --rm test_app \
-  python -m crawler.ingest_thanhnien \
-    --jobs-file data/thanhnien_jobs.ndjson \
+  python -m crawler.ingest \
+    --site thanhnien \
     --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
     --proxy 192.168.1.100:8080:apikey \
     --proxy-change-url http://192.168.1.100:8080/rotate \
@@ -155,7 +156,7 @@ Encapsulated in `IngestConfig` dataclass:
 - Proxy: scheme/host/port, rotation API, key, interval
 - Storage paths, logging
 
-Override via CLI flags (see `crawler/ingest_thanhnien.py` argparse setup)
+Override via CLI flags (see `crawler/ingest.py` argparse setup)
 
 ## Key Implementation Notes
 
@@ -238,7 +239,9 @@ docker compose up -d
 
 - `models.py`: SQLAlchemy ORM models
 - `crawler/`:
-  - `ingest_thanhnien.py`: CLI entrypoint and orchestration loop
+  - `ingest.py`: Multi-site CLI entrypoint and orchestration loop
+  - `ingest_thanhnien.py`: Compatibility wrapper that pins the site to ThanhNien
+  - `sites.py`: Registry of supported news sites and parser wiring
   - `jobs.py`: NDJSON loader, dedupe logic
   - `http_client.py`: httpx wrapper with retry/proxy
   - `parsers/thanhnien.py`: HTML extraction logic

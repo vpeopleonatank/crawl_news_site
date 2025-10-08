@@ -21,10 +21,8 @@ from .celery_app import celery_app
 from .config import IngestConfig, ProxyConfig, TimeoutConfig
 from .persistence import ArticlePersistence, ArticlePersistenceError
 from .parsers import AssetType
-from .playwright_support import (
-    PlaywrightVideoResolverError,
-    ThanhnienVideoResolver,
-)
+from .playwright_support import PlaywrightVideoResolverError
+from .sites import get_site_definition
 
 
 LOGGER = logging.getLogger(__name__)
@@ -92,8 +90,19 @@ def resolve_video_assets_task(self: Task, job: Mapping[str, Any]) -> Mapping[str
     except (TypeError, ValueError):
         LOGGER.debug("Invalid Playwright timeout %r; falling back to default %s", playwright_cfg.get("timeout"), timeout)
 
+    site_slug = str(job.get("site") or "thanhnien")
     try:
-        with ThanhnienVideoResolver(timeout=timeout) as resolver:
+        site = get_site_definition(site_slug)
+    except KeyError:
+        LOGGER.warning("Skipping Playwright resolution for unknown site %s (article %s)", site_slug, article_id)
+        return job
+
+    if not site.playwright_resolver_factory:
+        LOGGER.debug("Site %s has no Playwright resolver; skipping article %s", site.slug, article_id)
+        return job
+
+    try:
+        with site.build_playwright_resolver(timeout) as resolver:
             streams = resolver.resolve_streams(article_url)
     except PlaywrightVideoResolverError as exc:
         LOGGER.warning("Playwright failed to resolve streams for article %s: %s", article_id, exc)
