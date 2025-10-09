@@ -19,6 +19,7 @@ class Article(Base):
     __tablename__ = 'articles'
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid7)
+    site_slug = Column(String(100), nullable=False, index=True)
     title = Column(String(500), nullable=False, index=True)
     description = Column(Text)
     content = Column(Text)
@@ -46,7 +47,10 @@ class Article(Base):
     )
     
     def __repr__(self):
-        return f"<Article(id={self.id}, title='{self.title[:30]}...', url='{self.url}')>"
+        return (
+            f"<Article(id={self.id}, site='{self.site_slug}', title='{self.title[:30]}...', "
+            f"url='{self.url}')>"
+        )
 
 
 class ArticleImage(Base):
@@ -119,6 +123,7 @@ if __name__ == "__main__":
     
     # Example: Create an article with images and videos
     article = Article(
+        site_slug="thanhnien",
         title="Sample Article with UUIDv7",
         description="This is a sample article using UUIDv7 for IDs",
         content="Full content here...",

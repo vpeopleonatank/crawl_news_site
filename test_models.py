@@ -49,6 +49,7 @@ print("\n3. Creating test data...")
 # Test 1: Create article with Unicode content
 print("\n   Test 1: Article with Unicode content")
 article1 = Article(
+    site_slug="thanhnien",
     title="Python教程 - Learning Programming 🐍",
     description="Hướng dẫn lập trình Python cho người mới bắt đầu",
     content="这是一篇关于Python的详细文章。It covers basic to advanced topics.",
@@ -94,6 +95,7 @@ print(f"   ✓ Added {len(article1.videos)} videos")
 # Test 2: Create another article
 print("\n   Test 2: Second article")
 article2 = Article(
+    site_slug="thanhnien",
     title="Web Scraping Best Practices",
     description="Learn how to scrape websites ethically and efficiently",
     content="Web scraping is the process of extracting data from websites...",

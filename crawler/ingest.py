@@ -301,7 +301,7 @@ def _process_job(
             if resolver:
                 _update_video_assets_with_playwright(resolver, job.url, parsed.assets)
 
-            result = persistence.upsert_metadata(parsed, fetch_metadata)
+            result = persistence.upsert_metadata(parsed, site.slug, fetch_metadata)
             article_id = result.article_id
 
             if config.raw_html_cache_enabled:
@@ -355,7 +355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     existing_urls: set[str] = set()
     if config.resume:
         with SessionLocal() as session:
-            existing_urls = load_existing_urls(session)
+            existing_urls = load_existing_urls(session, site.slug)
         LOGGER.info(
             "Loaded %d existing article URLs for resume mode (site=%s)",
             len(existing_urls),

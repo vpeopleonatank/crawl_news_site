@@ -43,7 +43,7 @@
   - Parse DOM with `selectolax` or `BeautifulSoup` to extract title, subtitle, description, body paragraphs, publish date, authors, tags, category breadcrumbs, canonical URL.
   - Capture image and video blocks in article order, returning `ParsedAsset` list with source URL, type, caption, sequence.
   - Normalise publish date to timezone-aware `datetime`, map categories to internal IDs.
-  - Provide data model `ParsedArticle` with fields matching `models.Article` plus `assets` array.
+  - Provide data model `ParsedArticle` with fields matching `models.Article` (site slug supplied by orchestrator) plus an `assets` array.
 - Parser should be deterministic and idempotent; unit tests will live under `tests/parsers/test_thanhnien.py` using stored HTML fixtures.
 
 ### 4. Asset Pipeline
@@ -65,8 +65,9 @@
 ### 5. Persistence Layer
 - Module: `crawler/persistence.py`
 - Responsibilities:
-  - Manage SQLAlchemy sessions (reuse engine from app config).
-  - Upsert on `Article.url` to avoid duplicates. Use `session.merge` or explicit `ON CONFLICT` if switching to SQLModel/async later.
+- Manage SQLAlchemy sessions (reuse engine from app config).
+- Upsert on `Article.url` to avoid duplicates. Use `session.merge` or explicit `ON CONFLICT` if switching to SQLModel/async later.
+- Persist `Article.site_slug` with the active site identifier so multi-site crawls can be filtered downstream.
   - Maintain `sequence_number` for assets based on parser output order.
   - Wrap operations in a transaction; rollback and mark job as failed on exceptions.
   - Record crawl metadata (fetch timestamp, HTTP status) in `Article.comments` JSON for traceability.

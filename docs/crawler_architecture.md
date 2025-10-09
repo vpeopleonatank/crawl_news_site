@@ -182,11 +182,12 @@ The document includes:
 │  │  1. Query existing: SELECT * FROM articles WHERE url = ?           │     │
 │  │                                                                     │     │
 │  │  2. If not exists:                                                 │     │
-│  │       article = Article(id=uuid7(), url=url)                      │     │
+│  │       article = Article(id=uuid7(), url=url, site_slug=site)      │     │
 │  │       session.add(article)                                         │     │
 │  │       created = True                                               │     │
 │  │                                                                     │     │
 │  │  3. Update fields:                                                 │     │
+│  │       article.site_slug = site                                     │     │
 │  │       article.title = parsed.title                                │     │
 │  │       article.content = parsed.content                            │     │
 │  │       article.category_id = parsed.category_id                    │     │
@@ -397,6 +398,7 @@ The document includes:
 ```sql
 CREATE TABLE articles (
     id UUID PRIMARY KEY,                    -- UUIDv7 (time-sortable)
+    site_slug VARCHAR(100) NOT NULL,        -- site identifier for multi-site ingest
     title VARCHAR(500) NOT NULL,
     description TEXT,
     content TEXT,
@@ -410,6 +412,7 @@ CREATE TABLE articles (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE INDEX idx_articles_site_slug ON articles(site_slug);
 CREATE INDEX idx_articles_title ON articles(title);
 CREATE INDEX idx_articles_category_id ON articles(category_id);
 CREATE INDEX idx_articles_category_name ON articles(category_name);

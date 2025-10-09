@@ -32,10 +32,15 @@ class ArticlePersistence:
         self._session_factory = session_factory
         self._storage_root = storage_root
 
-    def upsert_metadata(self, parsed: ParsedArticle, fetch_metadata: dict | None = None) -> PersistenceResult:
+    def upsert_metadata(
+        self,
+        parsed: ParsedArticle,
+        site_slug: str,
+        fetch_metadata: dict | None = None,
+    ) -> PersistenceResult:
         try:
             with self._session_factory() as session:
-                article, created = self._upsert_metadata(session, parsed, fetch_metadata)
+                article, created = self._upsert_metadata(session, parsed, site_slug, fetch_metadata)
                 article_id = str(article.id)
                 session.commit()
                 return PersistenceResult(article_id=article_id, created=created)
@@ -46,14 +51,20 @@ class ArticlePersistence:
         self,
         session: Session,
         parsed: ParsedArticle,
+        site_slug: str,
         fetch_metadata: dict | None,
     ) -> tuple[Article, bool]:
+        if not site_slug:
+            raise ValueError("site_slug is required when persisting articles")
+
         article = session.query(Article).filter(Article.url == parsed.url).one_or_none()
         created = False
         if article is None:
-            article = Article(id=generate_uuid7(), url=parsed.url)
+            article = Article(id=generate_uuid7(), url=parsed.url, site_slug=site_slug)
             session.add(article)
             created = True
+        else:
+            article.site_slug = site_slug
 
         article.title = parsed.title
         article.description = parsed.description

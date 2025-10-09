@@ -99,7 +99,15 @@ class NDJSONJobLoader:
                 yield job
 
 
-def load_existing_urls(session: Session) -> set[str]:
-    """Return a set of article URLs already stored in the database."""
-    result = session.execute(select(Article.url))
+def load_existing_urls(session: Session, site_slug: str | None = None) -> set[str]:
+    """Return a set of article URLs already stored in the database.
+
+    When ``site_slug`` is provided, only URLs for that site are returned.
+    """
+
+    statement = select(Article.url)
+    if site_slug:
+        statement = statement.where(Article.site_slug == site_slug)
+
+    result = session.execute(statement)
     return {row[0] for row in result if row[0] is not None}
