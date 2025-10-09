@@ -6,6 +6,7 @@ import hashlib
 import logging
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -152,7 +153,9 @@ class AssetManager:
         if not ffmpeg_path:
             raise AssetDownloadError("ffmpeg is required to download HLS streams")
 
-        temporary_target = target.with_name(target.name + ".tmp")
+        temporary_target = target.with_name(
+            f"{target.stem}-{uuid.uuid4().hex}{target.suffix}.tmp"
+        )
         LOGGER.debug("Downloading HLS stream %s to %s", manifest_url, target)
         command = [
             ffmpeg_path,
@@ -179,8 +182,26 @@ class AssetManager:
             stderr_output = exc.stderr.decode(errors="ignore") if exc.stderr else ""
             message = stderr_output.strip() or str(exc)
             raise AssetDownloadError(f"ffmpeg failed to process {manifest_url}: {message}") from exc
+        except Exception:
+            temporary_target.unlink(missing_ok=True)
+            raise
 
-        temporary_target.replace(target)
+        if not temporary_target.exists():
+            raise AssetDownloadError(f"ffmpeg produced no output for {manifest_url}")
+
+        try:
+            temporary_target.replace(target)
+        except FileNotFoundError as exc:
+            temporary_target.unlink(missing_ok=True)
+            raise AssetDownloadError(
+                f"Temporary HLS download missing for {manifest_url}"
+            ) from exc
+        except OSError as exc:
+            temporary_target.unlink(missing_ok=True)
+            raise AssetDownloadError(
+                f"Failed to finalize HLS download for {manifest_url}: {exc}"
+            ) from exc
+
         return self._hash_file(target)
 
     def _stream_to_file(self, url: str, target: Path) -> tuple[str, int]:
