@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -37,9 +38,16 @@ class _JSONDedupeBackend:
             return {}
 
     def _flush(self) -> None:
-        tmp_path = self._path.with_suffix(".json.tmp")
+        tmp_path = self._path.parent / f"{self._path.stem}-{uuid.uuid4().hex}{self._path.suffix}.tmp"
         tmp_path.write_text(json.dumps(self._state, ensure_ascii=False), encoding="utf-8")
-        tmp_path.replace(self._path)
+        try:
+            tmp_path.replace(self._path)
+        except FileNotFoundError as exc:
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Failed to persist dedupe store at {self._path}: missing temp file") from exc
+        except OSError as exc:
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Failed to persist dedupe store at {self._path}: {exc}") from exc
 
     def upsert(self, record: ArticleRecord, url_hash: str) -> bool:
         payload = {
