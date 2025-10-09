@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a multi-site web crawler and article ingestion pipeline supporting Thanhnien.vn (Vietnamese news site). The system fetches article metadata from sitemaps, downloads HTML content, parses structured data, and stores everything in PostgreSQL with associated media assets (images/videos) persisted to disk.
+This is a multi-site web crawler and article ingestion pipeline supporting Thanhnien.vn and Znews.vn (Vietnamese news sites). The system fetches article metadata from sitemaps, downloads HTML content, parses structured data, and stores everything in PostgreSQL with associated media assets (images/videos) persisted to disk.
 
 **Tech Stack:**
 - SQLAlchemy 2.0.43 with PostgreSQL 16
@@ -28,9 +28,9 @@ Located in `models.py`:
 ## Architecture
 
 ### Ingestion Flow
-1. **Job Loader** (`crawler/jobs.py`): Reads NDJSON from site-specific jobs file or default path, deduplicates against existing URLs in DB
+1. **Job Loader** (`crawler/jobs.py`): Reads NDJSON from site-specific jobs file (Thanhnien) or streams Znews sitemap indices via `SitemapJobLoader`, deduplicates against existing URLs in DB
 2. **HTTP Fetcher** (`crawler/http_client.py`): Downloads HTML with retry/backoff, proxy rotation support, custom user agent
-3. **Parser** (`crawler/parsers/thanhnien.py`): Extracts title, description, content blocks, tags, category, publish date, embedded media URLs
+3. **Parser** (`crawler/parsers/thanhnien.py`, `crawler/parsers/znews.py`): Extracts title, description, content blocks, tags, category, publish date, embedded media URLs; Znews parser also supports video articles
 4. **Video Resolution** (optional, `crawler/playwright_support.py`): Resolves HLS manifests via Playwright browser automation if `--use-playwright` flag set
 5. **Persistence** (`crawler/persistence.py`): Upserts article metadata via SQLAlchemy; returns article UUID
 6. **Asset Pipeline** (`crawler/assets.py` + `crawler/tasks.py`): Enqueues Celery job for async media downloads, then persists file paths to DB
@@ -96,6 +96,18 @@ docker compose run --rm test_app \
     --max-workers 4 \
     --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db
 
+# Znews ingestion (sitemap loader pulls jobs from https://znews.vn/sitemap/sitemap.xml)
+docker compose run --rm test_app \
+  python -m crawler.ingest \
+    --site znews \
+    --storage-root /app/storage \
+    --max-workers 4 \
+    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db --sitemap-max-documents 0 --sitemap-max-urls-per-document 0
+```
+
+No `--jobs-file` flag is needed for Znews; the sitemap loader grabs the latest batches (five sitemap files, 200 URLs each by default). Override the window (e.g. full backfill) by passing `--sitemap-max-documents 0 --sitemap-max-urls-per-document 0`.
+
+```bash
 # Legacy single-site command (ThanhNien only)
 docker compose run --rm test_app \
   python -m crawler.ingest_thanhnien \
@@ -189,6 +201,7 @@ Override via CLI flags (see `crawler/ingest.py` argparse setup):
 - `--raw-html-cache`: Enable HTML persistence
 - `--proxy`, `--proxy-scheme`, `--proxy-change-url`, `--proxy-key`, `--proxy-rotation-interval`: Proxy configuration
 - `--use-playwright`, `--playwright-timeout`: Video manifest resolution
+- `--sitemap-max-documents`, `--sitemap-max-urls-per-document`: Override sitemap loader caps (pass 0 to disable the limit entirely)
 
 ## Key Implementation Notes
 
@@ -197,6 +210,10 @@ All entities use time-ordered UUIIDv7 via `uuid_utils.uuid7()` in `models.py:10`
 
 ### Parser Determinism
 `ThanhnienParser` extracts data deterministically from HTML. Unit tests in `tests/parsers/test_thanhnien_parser.py` use saved fixtures. CSS selectors target multiple patterns for resilience to site structure changes.
+`ZnewsParser` mirrors this approach and handles both standard prose articles and video pages (parsing the primary `<video>` asset when present). Fixtures live in `tests/parsers/test_znews_parser.py`.
+
+### Znews Sitemap Loader
+`SitemapJobLoader` streams sitemap indices directly from `https://znews.vn/sitemap/sitemap.xml`. It filters to `sitemap-article*` and `sitemap-news*` documents, processes up to five sitemap files by default, and caps each file to the first 200 URLs to keep ingestion windows bounded. Loader respects resume mode and shares dedupe stats with `NDJSONJobLoader`.
 
 ### Asset Sequencing
 Assets maintain insertion order via `sequence_number` in DB. Parser returns ordered list; `ensure_asset_sequence()` validates continuity.
@@ -242,7 +259,7 @@ Optional HLS manifest resolution when `--use-playwright` flag set. Launches head
 1. Create parser class in `crawler/parsers/newsite.py` implementing parser interface
 2. Define extraction logic following `ThanhnienParser` pattern
 3. Register site in `crawler/sites.py` using `SiteDefinition`
-4. Create job file in `data/newsite_jobs.ndjson`
+4. Provide a job source: create an NDJSON file in `data/newsite_jobs.ndjson` or register a `job_loader_factory` (e.g., `SitemapJobLoader`) in `crawler/sites.py`
 5. Add test fixtures in `tests/parsers/test_newsite_parser.py`
 6. Test with `--site newsite` flag
 
@@ -284,11 +301,12 @@ docker compose up -d
   - `ingest.py`: Multi-site CLI entrypoint and orchestration loop
   - `ingest_thanhnien.py`: Compatibility wrapper that pins the site to ThanhNien
   - `sites.py`: Registry of supported news sites and parser wiring
-  - `jobs.py`: NDJSON loader, dedupe logic
+  - `jobs.py`: NDJSON loader, Znews sitemap loader, dedupe logic
   - `http_client.py`: httpx wrapper with retry/proxy
   - `parsers/`:
     - `__init__.py`: Base parser interfaces (ParsedArticle, ParsedAsset dataclasses)
     - `thanhnien.py`: HTML extraction logic for Thanhnien site
+    - `znews.py`: HTML extraction logic for Znews site (articles + video pages)
   - `persistence.py`: DB session management, upsert operations
   - `assets.py`: Asset serialization, download manager
   - `tasks.py`: Celery task definitions (download_assets_task, resolve_video_assets_task)
@@ -302,8 +320,8 @@ docker compose up -d
   - `test_asset_manager.py`: Asset management tests
   - `test_ingest_thanhnien.py`: Integration tests
   - `parsers/test_thanhnien_parser.py`: Parser unit tests with fixtures
-- `data/`: Input job queues
-  - `thanhnien_jobs.ndjson`: Input job queue (one JSON object per line)
+  - `parsers/test_znews_parser.py`: Parser and video coverage for Znews sitemap content
+- `data/`: Input job queues (Thanhnien ships with NDJSON; Znews uses remote sitemap loader by default)
 - `storage/`: Runtime storage (bind-mounted in Docker)
   - `raw/`: Optional raw HTML cache
   - `articles/{uuid}/images/` and `videos/`: Downloaded assets

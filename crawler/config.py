@@ -106,6 +106,8 @@ class IngestConfig:
     storage_root: Path = DEFAULT_STORAGE_ROOT
     db_url: Optional[str] = None
     user_agent: str = DEFAULT_USER_AGENT
+    sitemap_max_documents: int | None = 5
+    sitemap_max_urls_per_document: int | None = 200
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
     timeout: TimeoutConfig = field(default_factory=TimeoutConfig)

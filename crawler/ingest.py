@@ -86,6 +86,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=30.0,
         help="Seconds to wait for Playwright video manifest responses",
     )
+    parser.add_argument(
+        "--sitemap-max-documents",
+        type=int,
+        default=None,
+        help="Maximum number of sitemap documents to process (0 or negative disables the limit; defaults to site configuration).",
+    )
+    parser.add_argument(
+        "--sitemap-max-urls-per-document",
+        type=int,
+        default=None,
+        help="Maximum URLs to read from each sitemap document (0 or negative disables the limit; defaults to site configuration).",
+    )
     return parser
 
 
@@ -139,7 +151,21 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
     config.ensure_directories()
     config.playwright_enabled = getattr(args, "use_playwright", False)
     config.playwright_timeout = getattr(args, "playwright_timeout", config.playwright_timeout)
+    config.sitemap_max_documents = _apply_sitemap_limit(
+        config.sitemap_max_documents, getattr(args, "sitemap_max_documents", None)
+    )
+    config.sitemap_max_urls_per_document = _apply_sitemap_limit(
+        config.sitemap_max_urls_per_document, getattr(args, "sitemap_max_urls_per_document", None)
+    )
     return config
+
+
+def _apply_sitemap_limit(default_value: int | None, arg_value: int | None) -> int | None:
+    if arg_value is None:
+        return default_value
+    if arg_value <= 0:
+        return None
+    return arg_value
 
 
 def persist_raw_html(config: IngestConfig, article_id: str, html: str) -> None:
@@ -368,11 +394,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         config.playwright_enabled and site.playwright_resolver_factory is not None and not task_always_eager
     )
 
-    job_loader = NDJSONJobLoader(
-        jobs_file=config.jobs_file,
-        existing_urls=existing_urls,
-        resume=config.resume,
-    )
+    if site.job_loader_factory is not None:
+        job_loader = site.job_loader_factory(config, existing_urls)
+    else:
+        job_loader = NDJSONJobLoader(
+            jobs_file=config.jobs_file,
+            existing_urls=existing_urls,
+            resume=config.resume,
+        )
 
     persistence = ArticlePersistence(session_factory=SessionLocal, storage_root=config.storage_root)
     stats = IngestionStats()
