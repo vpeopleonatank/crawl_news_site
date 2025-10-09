@@ -12,7 +12,7 @@ from crawler.ingest_thanhnien import (
     _update_video_assets_with_playwright,
     build_config as build_thanhnien_config,
 )
-from crawler.jobs import ArticleJob
+from crawler.jobs import ArticleJob, NDJSONJobLoader, ThanhnienCategoryLoader, build_thanhnien_job_loader
 from crawler.parsers import AssetType, ParsedAsset
 from crawler.playwright_support import PlaywrightVideoResolverError
 from crawler.sites import get_site_definition
@@ -122,12 +122,85 @@ class ThanhnienConfigTestCase(unittest.TestCase):
                 max_workers=4,
                 use_playwright=False,
                 playwright_timeout=30.0,
+                sitemap_max_documents=None,
+                sitemap_max_urls_per_document=None,
+                thanhnien_categories=None,
+                thanhnien_all_categories=False,
+                thanhnien_max_pages=None,
             )
 
             config = build_thanhnien_config(args)
 
             self.assertEqual(config.jobs_file, site.default_jobs_file)
             self.assertEqual(config.user_agent, site.default_user_agent)
+            self.assertFalse(config.jobs_file_provided)
+            self.assertEqual(config.thanhnien.selected_slugs, ())
+            self.assertFalse(config.thanhnien.crawl_all)
+            self.assertEqual(config.thanhnien.max_pages, 10)
+
+    def test_build_config_parses_category_flags(self) -> None:
+        site = get_site_definition("thanhnien")
+        with TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir) / "storage"
+            args = argparse.Namespace(
+                site="thanhnien",
+                jobs_file=None,
+                storage_root=storage_root,
+                db_url="postgresql://user:pass@localhost/db",
+                resume=False,
+                raw_html_cache=False,
+                proxy=None,
+                proxy_change_url=None,
+                proxy_key=None,
+                proxy_scheme="http",
+                proxy_rotation_interval=240.0,
+                max_workers=4,
+                use_playwright=False,
+                playwright_timeout=30.0,
+                sitemap_max_documents=None,
+                sitemap_max_urls_per_document=None,
+                thanhnien_categories="chinh-tri, THOI-SU-PHAP-LUAT",
+                thanhnien_all_categories=False,
+                thanhnien_max_pages=3,
+            )
+
+            config = build_thanhnien_config(args)
+
+            self.assertEqual(config.jobs_file, site.default_jobs_file)
+            self.assertEqual(config.thanhnien.selected_slugs, ("chinh-tri", "thoi-su-phap-luat"))
+            self.assertFalse(config.thanhnien.crawl_all)
+            self.assertEqual(config.thanhnien.max_pages, 3)
+
+
+class ThanhnienJobLoaderFactoryTestCase(unittest.TestCase):
+    def test_returns_category_loader_when_catalog_available(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            config = IngestConfig(
+                jobs_file=Path("data/thanhnien_jobs.ndjson"),
+                storage_root=Path(tmpdir) / "storage",
+                db_url="postgresql://user:pass@localhost/db",
+            )
+            config.jobs_file_provided = False
+            config.thanhnien.selected_slugs = ("chinh-tri",)
+            config.thanhnien.max_pages = 2
+
+            loader = build_thanhnien_job_loader(config, set())
+
+            self.assertIsInstance(loader, ThanhnienCategoryLoader)
+            self.assertEqual([category.slug for category in loader._categories], ["chinh-tri"])
+
+    def test_returns_ndjson_loader_when_jobs_file_override_present(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            config = IngestConfig(
+                jobs_file=Path(tmpdir) / "custom.ndjson",
+                storage_root=Path(tmpdir) / "storage",
+                db_url="postgresql://user:pass@localhost/db",
+            )
+            config.jobs_file_provided = True
+
+            loader = build_thanhnien_job_loader(config, set())
+
+            self.assertIsInstance(loader, NDJSONJobLoader)
 
 
 class BuildTaskPayloadTestCase(unittest.TestCase):

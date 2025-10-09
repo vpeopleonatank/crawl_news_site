@@ -101,6 +101,15 @@ class ProxyConfig:
 
 
 @dataclass(slots=True)
+class ThanhnienCategoryConfig:
+    """Category selection controls for Thanhnien ingestion."""
+
+    selected_slugs: tuple[str, ...] = ()
+    crawl_all: bool = False
+    max_pages: int | None = 10
+
+
+@dataclass(slots=True)
 class IngestConfig:
     jobs_file: Path = DEFAULT_JOBS_FILE
     storage_root: Path = DEFAULT_STORAGE_ROOT
@@ -117,6 +126,8 @@ class IngestConfig:
     proxy: Optional[ProxyConfig] = None
     playwright_enabled: bool = False
     playwright_timeout: float = 30.0
+    jobs_file_provided: bool = False
+    thanhnien: ThanhnienCategoryConfig = field(default_factory=ThanhnienCategoryConfig)
 
     def ensure_directories(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)

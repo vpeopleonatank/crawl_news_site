@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Protocol
+from typing import Iterator, Protocol, Sequence
+from urllib.parse import urljoin
 from xml.etree import ElementTree as ET
 
 import httpx
+from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .config import IngestConfig
 from models import Article
 
 LOGGER = logging.getLogger(__name__)
@@ -37,6 +41,57 @@ class JobLoaderStats:
     skipped_existing: int = 0
     skipped_invalid: int = 0
     skipped_duplicate: int = 0
+
+
+_THANHNIEN_BASE_URL = "https://thanhnien.vn"
+_THANHNIEN_ARTICLE_PATTERN = re.compile(r"^https?://(?:[^./]+\.)?thanhnien\.vn/[^?#]+-185\d+\.htm$")
+
+
+@dataclass(slots=True)
+class ThanhnienCategoryDefinition:
+    slug: str
+    name: str
+    category_id: int
+    landing_url: str
+
+    def normalized_landing_url(self) -> str:
+        return _normalize_thanhnien_url(self.landing_url)
+
+    def timeline_url(self, page: int) -> str:
+        return f"{_THANHNIEN_BASE_URL}/timelinelist/{self.category_id}/{page}.htm"
+
+
+def _normalize_thanhnien_url(raw_url: str) -> str:
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return _THANHNIEN_BASE_URL
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_THANHNIEN_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_THANHNIEN_BASE_URL}/", cleaned)
+    return cleaned
+
+
+def _normalize_article_href(raw_href: str | None) -> str | None:
+    if not raw_href:
+        return None
+    cleaned = raw_href.strip()
+    if not cleaned or cleaned.lower().startswith(("javascript:", "mailto:")):
+        return None
+    cleaned = cleaned.split("#", 1)[0].split("?", 1)[0]
+    if not cleaned:
+        return None
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_THANHNIEN_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_THANHNIEN_BASE_URL}/", cleaned)
+    if not _THANHNIEN_ARTICLE_PATTERN.match(cleaned):
+        return None
+    return cleaned
 
 
 class JobLoader(Protocol):
@@ -238,6 +293,253 @@ class SitemapJobLoader:
         if "}" in tag:
             return tag.split("}", 1)[1]
         return tag
+
+
+class ThanhnienCategoryLoader:
+    """Iterate Thanhnien category landing pages and timeline endpoints."""
+
+    def __init__(
+        self,
+        categories: Sequence[ThanhnienCategoryDefinition],
+        *,
+        existing_urls: set[str] | None = None,
+        resume: bool = False,
+        user_agent: str | None = None,
+        max_pages: int | None = 10,
+        request_timeout: float = 5.0,
+        include_landing_page: bool = True,
+    ) -> None:
+        self._categories = list(categories)
+        self._existing_urls = existing_urls or set()
+        self._resume = resume
+        self._user_agent = user_agent
+        self._max_pages = max_pages
+        self._request_timeout = request_timeout
+        self._include_landing_page = include_landing_page
+
+        self.stats = JobLoaderStats()
+        self._seen_urls: set[str] = set()
+
+    def __iter__(self) -> Iterator[ArticleJob]:
+        self.stats = JobLoaderStats()
+        self._seen_urls.clear()
+
+        headers = {"User-Agent": self._user_agent} if self._user_agent else None
+        with httpx.Client(headers=headers, timeout=self._request_timeout) as client:
+            for category in self._categories:
+                yield from self._iterate_category(client, category)
+
+    def _iterate_category(self, client: httpx.Client, category: ThanhnienCategoryDefinition) -> Iterator[ArticleJob]:
+        emitted_before = self.stats.emitted
+        skipped_existing_before = self.stats.skipped_existing
+        skipped_duplicate_before = self.stats.skipped_duplicate
+
+        if self._include_landing_page:
+            landing_html = self._fetch_html(client, category.normalized_landing_url())
+            if landing_html:
+                yield from self._emit_jobs_from_html(landing_html)
+
+        page = 1
+        consecutive_empty_pages = 0
+        while True:
+            if self._max_pages is not None and page > self._max_pages:
+                break
+
+            timeline_url = category.timeline_url(page)
+            html = self._fetch_html(client, timeline_url)
+            if not html:
+                break
+
+            emitted_on_page = False
+            for job in self._emit_jobs_from_html(html):
+                emitted_on_page = True
+                yield job
+
+            if not emitted_on_page:
+                consecutive_empty_pages += 1
+                if consecutive_empty_pages >= 2:
+                    break
+            else:
+                consecutive_empty_pages = 0
+
+            page += 1
+
+        LOGGER.info(
+            "Thanhnien category '%s': emitted=%d skipped_existing=%d skipped_duplicate=%d",
+            category.slug,
+            self.stats.emitted - emitted_before,
+            self.stats.skipped_existing - skipped_existing_before,
+            self.stats.skipped_duplicate - skipped_duplicate_before,
+        )
+
+    def _fetch_html(self, client: httpx.Client, url: str) -> str:
+        try:
+            response = client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            LOGGER.warning("Thanhnien category request failed (%s): %s", url, exc)
+            return ""
+        except httpx.HTTPError as exc:
+            LOGGER.warning("Thanhnien category request error (%s): %s", url, exc)
+            return ""
+        return response.text.strip()
+
+    def _emit_jobs_from_html(self, html: str) -> Iterator[ArticleJob]:
+        for url in self._extract_article_urls(html):
+            self.stats.total += 1
+
+            if url in self._seen_urls:
+                self.stats.skipped_duplicate += 1
+                continue
+            self._seen_urls.add(url)
+
+            if self._resume and url in self._existing_urls:
+                self.stats.skipped_existing += 1
+                continue
+
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None)
+            self.stats.emitted += 1
+            yield job
+
+    def _extract_article_urls(self, html: str) -> list[str]:
+        soup = BeautifulSoup(html, "html.parser")
+        urls: list[str] = []
+        seen_local: set[str] = set()
+
+        for anchor in soup.find_all("a"):
+            primary_href = anchor.get("data-io-canonical-url") or anchor.get("href")
+            normalized = _normalize_article_href(primary_href)
+            if not normalized and primary_href:
+                backup_href = anchor.get("href") if primary_href != anchor.get("href") else None
+                normalized = _normalize_article_href(backup_href)
+            if not normalized:
+                continue
+            if normalized in seen_local:
+                continue
+            seen_local.add(normalized)
+            urls.append(normalized)
+
+        return urls
+
+
+_DEFAULT_THANHNIEN_CATEGORY_SLUGS: tuple[str, ...] = ("chinh-tri", "thoi-su-phap-luat")
+_DEFAULT_THANHNIEN_CATEGORIES: tuple[ThanhnienCategoryDefinition, ...] = (
+    ThanhnienCategoryDefinition(
+        slug="chinh-tri",
+        name="Chính trị",
+        category_id=185227,
+        landing_url="https://thanhnien.vn/chinh-tri.htm",
+    ),
+    ThanhnienCategoryDefinition(
+        slug="thoi-su-phap-luat",
+        name="Thời sự - Pháp luật",
+        category_id=1855,
+        landing_url="https://thanhnien.vn/thoi-su/phap-luat.htm",
+    ),
+)
+
+
+def _load_thanhnien_category_catalog(catalog_path: Path) -> dict[str, ThanhnienCategoryDefinition]:
+    try:
+        raw_payload = catalog_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Thanhnien category catalog not found: {catalog_path}") from exc
+
+    try:
+        records = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid Thanhnien category catalog: {exc}") from exc
+
+    catalog: dict[str, ThanhnienCategoryDefinition] = {}
+    for entry in records:
+        slug = entry.get("slug")
+        name = entry.get("name") or ""
+        category_id = entry.get("category_id")
+        landing_url = entry.get("landing_url") or ""
+
+        if not isinstance(slug, str) or not slug:
+            raise ValueError("Category catalog entries must include a non-empty 'slug'")
+        if not isinstance(category_id, int):
+            try:
+                category_id = int(category_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid category_id for slug '{slug}': {entry.get('category_id')}") from exc
+
+        definition = ThanhnienCategoryDefinition(
+            slug=slug.strip().lower(),
+            name=name.strip() or slug,
+            category_id=category_id,
+            landing_url=_normalize_thanhnien_url(landing_url),
+        )
+        catalog[definition.slug] = definition
+
+    if not catalog:
+        raise ValueError("Thanhnien category catalog is empty")
+    return catalog
+
+
+def _select_thanhnien_categories(
+    config: IngestConfig, catalog: dict[str, ThanhnienCategoryDefinition]
+) -> list[ThanhnienCategoryDefinition]:
+    if config.thanhnien.crawl_all:
+        selected_slugs = list(catalog.keys())
+    elif config.thanhnien.selected_slugs:
+        selected_slugs = list(config.thanhnien.selected_slugs)
+    else:
+        selected_slugs = [slug for slug in _DEFAULT_THANHNIEN_CATEGORY_SLUGS if slug in catalog]
+
+    if not selected_slugs:
+        raise ValueError(
+            "No Thanhnien categories selected. Provide --thanhnien-categories or update the category catalog."
+        )
+
+    missing = [slug for slug in selected_slugs if slug not in catalog]
+    if missing:
+        raise ValueError(f"Unknown Thanhnien categories requested: {', '.join(missing)}")
+
+    return [catalog[slug] for slug in selected_slugs]
+
+
+def build_thanhnien_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
+    if config.jobs_file_provided:
+        LOGGER.info("Thanhnien jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
+        return NDJSONJobLoader(
+            jobs_file=config.jobs_file,
+            existing_urls=existing_urls,
+            resume=config.resume,
+        )
+
+    catalog: dict[str, ThanhnienCategoryDefinition] = {
+        category.slug: category for category in _DEFAULT_THANHNIEN_CATEGORIES
+    }
+
+    catalog_path = Path("data/thanhnien_categories.json")
+    if catalog_path.exists():
+        try:
+            catalog = _load_thanhnien_category_catalog(catalog_path)
+            LOGGER.info("Loaded Thanhnien category catalog from %s", catalog_path)
+        except ValueError as exc:
+            LOGGER.warning("Ignoring invalid Thanhnien category catalog at %s: %s", catalog_path, exc)
+
+    try:
+        categories = _select_thanhnien_categories(config, catalog)
+    except ValueError as exc:
+        raise ValueError(f"Failed to select Thanhnien categories: {exc}") from exc
+
+    LOGGER.info(
+        "Initialized ThanhnienCategoryLoader with categories: %s",
+        ", ".join(category.slug for category in categories),
+    )
+
+    return ThanhnienCategoryLoader(
+        categories=categories,
+        existing_urls=existing_urls,
+        resume=config.resume,
+        user_agent=config.user_agent,
+        max_pages=config.thanhnien.max_pages,
+        request_timeout=config.timeout.request_timeout,
+    )
+
 
 def load_existing_urls(session: Session, site_slug: str | None = None) -> set[str]:
     """Return a set of article URLs already stored in the database.

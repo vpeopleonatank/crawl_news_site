@@ -98,6 +98,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum URLs to read from each sitemap document (0 or negative disables the limit; defaults to site configuration).",
     )
+    parser.add_argument(
+        "--thanhnien-categories",
+        type=str,
+        default=None,
+        help="Comma-separated list of Thanhnien category slugs to ingest (defaults to curated subset when omitted).",
+    )
+    parser.add_argument(
+        "--thanhnien-all-categories",
+        action="store_true",
+        help="Crawl all known Thanhnien categories (overrides curated defaults).",
+    )
+    parser.add_argument(
+        "--thanhnien-max-pages",
+        type=int,
+        default=None,
+        help="Maximum number of timeline pages to fetch per Thanhnien category (0 or negative disables the limit; default is 10).",
+    )
     return parser
 
 
@@ -135,6 +152,19 @@ def _parse_proxy_config(args: argparse.Namespace) -> ProxyConfig | None:
     return proxy_config
 
 
+def _parse_thanhnien_categories(raw_value: str | None) -> tuple[str, ...]:
+    if not raw_value:
+        return ()
+
+    selected: list[str] = []
+    for part in raw_value.split(","):
+        slug = part.strip().lower()
+        if not slug or slug in selected:
+            continue
+        selected.append(slug)
+    return tuple(selected)
+
+
 def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig:
     jobs_file = args.jobs_file or site.default_jobs_file
     config = IngestConfig(
@@ -157,6 +187,14 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
     config.sitemap_max_urls_per_document = _apply_sitemap_limit(
         config.sitemap_max_urls_per_document, getattr(args, "sitemap_max_urls_per_document", None)
     )
+    config.jobs_file_provided = args.jobs_file is not None
+
+    if site.slug == "thanhnien":
+        config.thanhnien.selected_slugs = _parse_thanhnien_categories(getattr(args, "thanhnien_categories", None))
+        config.thanhnien.crawl_all = bool(getattr(args, "thanhnien_all_categories", False))
+        config.thanhnien.max_pages = _apply_sitemap_limit(
+            config.thanhnien.max_pages, getattr(args, "thanhnien_max_pages", None)
+        )
     return config
 
 

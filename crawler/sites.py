@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, TYPE_CHECKING
 
-from .jobs import SitemapJobLoader
+from .jobs import SitemapJobLoader, build_thanhnien_job_loader
 from .parsers import ArticleParser
 from .parsers.thanhnien import ThanhnienParser
 from .parsers.znews import ZnewsParser
@@ -48,6 +48,7 @@ _SITE_REGISTRY: Dict[str, SiteDefinition] = {
         default_jobs_file=Path("data/thanhnien_jobs.ndjson"),
         default_user_agent="thanhnien-ingestor/1.0",
         playwright_resolver_factory=lambda timeout: ThanhnienVideoResolver(timeout=timeout),
+        job_loader_factory=build_thanhnien_job_loader,
     ),
     "znews": SiteDefinition(
         slug="znews",
