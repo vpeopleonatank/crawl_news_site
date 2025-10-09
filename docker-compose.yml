@@ -75,8 +75,8 @@ services:
         condition: service_healthy
     volumes:
       - ./:/app
-      - ./storage:/app/storage
-      - ./data:/app/data
+      - ${TEST_APP_STORAGE_MOUNT_PATH:-./storage}:/app/storage
+      - ${TEST_APP_DATA_MOUNT_PATH:-./data}:/app/data
     command: python test_models.py
     networks:
       - crawl_network
