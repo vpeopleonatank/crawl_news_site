@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
 from datetime import datetime
 from dataclasses import dataclass
@@ -260,6 +261,75 @@ def _enqueue_asset_downloads(
     LOGGER.info("Queued %d assets for article %s", len(assets), article_id)
 
 
+def _process_job(
+    job: ArticleJob,
+    *,
+    config: IngestConfig,
+    site: SiteDefinition,
+    persistence: ArticlePersistence,
+    use_celery_playwright: bool,
+) -> bool:
+    LOGGER.info("Processing article %s for site %s", job.url, site.slug)
+    parser_impl = site.build_parser()
+
+    with ExitStack() as stack:
+        fetcher = stack.enter_context(HttpFetcher(config))
+        resolver = None
+        if (
+            config.playwright_enabled
+            and site.playwright_resolver_factory is not None
+            and not use_celery_playwright
+        ):
+            try:
+                resolver = stack.enter_context(site.build_playwright_resolver(config.playwright_timeout))
+            except PlaywrightVideoResolverError as exc:
+                LOGGER.warning(
+                    "Playwright resolver initialisation failed for site %s; continuing without it: %s",
+                    site.slug,
+                    exc,
+                )
+                resolver = None
+
+        try:
+            html, response = fetcher.fetch_html(job.url)
+            parsed = parser_impl.parse(job.url, html)
+            fetch_metadata = {
+                "status_code": response.status_code,
+                "sitemap_url": job.sitemap_url,
+                "lastmod": job.lastmod,
+            }
+            if resolver:
+                _update_video_assets_with_playwright(resolver, job.url, parsed.assets)
+
+            result = persistence.upsert_metadata(parsed, fetch_metadata)
+            article_id = result.article_id
+
+            if config.raw_html_cache_enabled:
+                persist_raw_html(config, article_id, html)
+
+            _enqueue_asset_downloads(
+                config,
+                site,
+                article_id,
+                job.url,
+                parsed.assets,
+                use_celery_playwright=use_celery_playwright,
+            )
+
+            return True
+        except (HttpFetchError, ParsingError, ArticlePersistenceError) as exc:
+            LOGGER.error("Failed to process %s: %s", job.url, exc)
+            if isinstance(exc, HttpFetchError):
+                _record_fetch_failure(config, job, exc)
+            return False
+        except PlaywrightVideoResolverError as exc:
+            LOGGER.error("Playwright resolver error for %s: %s", job.url, exc)
+            return False
+        except Exception:
+            LOGGER.exception("Unhandled error for %s", job.url)
+            return False
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     configure_logging()
     parser = build_arg_parser()
@@ -305,62 +375,53 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     persistence = ArticlePersistence(session_factory=SessionLocal, storage_root=config.storage_root)
-    parser_impl = site.build_parser()
     stats = IngestionStats()
 
-    with ExitStack() as stack:
-        fetcher = stack.enter_context(HttpFetcher(config))
-        resolver = None
-        if config.playwright_enabled and site.playwright_resolver_factory and not use_celery_playwright:
-            try:
-                resolver = stack.enter_context(site.build_playwright_resolver(config.playwright_timeout))
-            except PlaywrightVideoResolverError as exc:
-                LOGGER.warning(
-                    "Playwright resolver initialisation failed for site %s; continuing without it: %s",
-                    site.slug,
-                    exc,
-                )
-                resolver = None
+    max_workers = max(1, config.rate_limit.max_workers)
+    future_to_job: dict[Future[bool], ArticleJob] = {}
+
+    def _drain_completed(*, block_until_empty: bool) -> None:
+        while future_to_job:
+            pending = tuple(future_to_job.keys())
+            if not pending:
+                return
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            if not done:
+                return
+            for finished in done:
+                job = future_to_job.pop(finished, None)
+                if job is None:
+                    continue
+                try:
+                    succeeded = finished.result()
+                except Exception:  # pragma: no cover - defensive guard
+                    LOGGER.exception("Worker raised unexpectedly for %s", job.url)
+                    stats.failed += 1
+                    continue
+
+                if succeeded:
+                    stats.succeeded += 1
+                else:
+                    stats.failed += 1
+            if not block_until_empty:
+                break
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for job in job_loader:
             stats.processed += 1
-            LOGGER.info("Processing article %s for site %s", job.url, site.slug)
-            try:
-                html, response = fetcher.fetch_html(job.url)
-                parsed = parser_impl.parse(job.url, html)
-                fetch_metadata = {
-                    "status_code": response.status_code,
-                    "sitemap_url": job.sitemap_url,
-                    "lastmod": job.lastmod,
-                }
-                if resolver:
-                    _update_video_assets_with_playwright(resolver, job.url, parsed.assets)
-                result = persistence.upsert_metadata(parsed, fetch_metadata)
-                article_id = result.article_id
+            future = executor.submit(
+                _process_job,
+                job,
+                config=config,
+                site=site,
+                persistence=persistence,
+                use_celery_playwright=use_celery_playwright,
+            )
+            future_to_job[future] = job
+            if len(future_to_job) >= max_workers:
+                _drain_completed(block_until_empty=False)
 
-                if config.raw_html_cache_enabled:
-                    persist_raw_html(config, article_id, html)
-
-                _enqueue_asset_downloads(
-                    config,
-                    site,
-                    article_id,
-                    job.url,
-                    parsed.assets,
-                    use_celery_playwright=use_celery_playwright,
-                )
-
-                stats.succeeded += 1
-            except (HttpFetchError, ParsingError, ArticlePersistenceError) as exc:
-                stats.failed += 1
-                LOGGER.error("Failed to process %s: %s", job.url, exc)
-                if isinstance(exc, HttpFetchError):
-                    _record_fetch_failure(config, job, exc)
-            except PlaywrightVideoResolverError as exc:
-                stats.failed += 1
-                LOGGER.error("Playwright resolver error for %s: %s", job.url, exc)
-            except Exception as exc:  # pragma: no cover - unexpected failure
-                stats.failed += 1
-                LOGGER.exception("Unhandled error for %s", job.url)
+        _drain_completed(block_until_empty=True)
 
     LOGGER.info(
         "Processed %d jobs for site %s: %d succeeded, %d failed, %d skipped by loader",
