@@ -47,6 +47,8 @@ def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
             scheme=str(proxy_payload.get("scheme", "http")),
             host=proxy_payload.get("host"),
             port=proxy_payload.get("port"),
+            username=proxy_payload.get("username"),
+            password=proxy_payload.get("password"),
             api_key=proxy_payload.get("api_key"),
             change_ip_url=proxy_payload.get("change_ip_url"),
             min_rotation_interval=float(

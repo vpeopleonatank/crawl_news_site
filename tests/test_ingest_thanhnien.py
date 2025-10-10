@@ -3,8 +3,11 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from crawler.config import IngestConfig
+import httpx
+
+from crawler.config import IngestConfig, ProxyConfig
 from crawler.http_client import HttpFetchError
 from crawler.ingest_thanhnien import (
     _build_task_payload,
@@ -205,6 +208,28 @@ class ThanhnienJobLoaderFactoryTestCase(unittest.TestCase):
             loader = build_thanhnien_job_loader(config, set())
 
             self.assertIsInstance(loader, NDJSONJobLoader)
+
+    def test_category_loader_passes_proxy_to_httpx_client(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            config = IngestConfig(
+                jobs_file=Path("data/thanhnien_jobs.ndjson"),
+                storage_root=Path(tmpdir) / "storage",
+                db_url="postgresql://user:pass@localhost/db",
+            )
+            config.jobs_file_provided = False
+            config.thanhnien.selected_slugs = ("chinh-tri",)
+            config.proxy = ProxyConfig.from_endpoint("127.0.0.1:8181")
+
+            loader = build_thanhnien_job_loader(config, set())
+            self.assertIsInstance(loader, ThanhnienCategoryLoader)
+
+            with patch("crawler.jobs.httpx.Client") as client_cls:
+                client_instance = client_cls.return_value.__enter__.return_value
+                client_instance.get.side_effect = httpx.HTTPError("boom")
+                list(loader)
+
+            kwargs = client_cls.call_args.kwargs
+            self.assertEqual(kwargs.get("proxy"), config.proxy.httpx_proxy())
 
 
 class BuildTaskPayloadTestCase(unittest.TestCase):

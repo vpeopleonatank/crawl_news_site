@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 DEFAULT_JOBS_FILE = Path("data/jobs.ndjson")
 DEFAULT_STORAGE_ROOT = Path("storage")
@@ -39,6 +40,8 @@ class ProxyConfig:
     scheme: str = "http"
     host: Optional[str] = None
     port: Optional[int] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
     api_key: Optional[str] = None
     change_ip_url: Optional[str] = None
     min_rotation_interval: float = 240.0
@@ -53,7 +56,15 @@ class ProxyConfig:
         address = self.address
         if not address:
             return None
-        return f"{self.scheme}://{address}"
+        credentials = ""
+        if self.username:
+            user = quote(self.username, safe="")
+            if self.password:
+                pwd = quote(self.password, safe="")
+                credentials = f"{user}:{pwd}@"
+            else:
+                credentials = f"{user}@"
+        return f"{self.scheme}://{credentials}{address}"
 
     @classmethod
     def from_endpoint(
@@ -86,7 +97,20 @@ class ProxyConfig:
         except ValueError as exc:
             raise ValueError("Proxy port must be an integer") from exc
 
-        key = ":".join(parts[2:]).strip() if len(parts) > 2 else None
+        username: Optional[str] = None
+        password: Optional[str] = None
+        key: Optional[str] = None
+        extras = parts[2:]
+        if extras:
+            cleaned_extras = [segment.strip() for segment in extras]
+            if len(cleaned_extras) == 1:
+                key = cleaned_extras[0] or None
+            elif len(cleaned_extras) >= 2:
+                username = cleaned_extras[0] or None
+                password = cleaned_extras[1] or None
+                remaining = [segment for segment in cleaned_extras[2:] if segment]
+                if remaining:
+                    key = ":".join(remaining)
         if api_key is not None:
             key = api_key
 
@@ -94,6 +118,8 @@ class ProxyConfig:
             scheme=scheme,
             host=host,
             port=port,
+            username=username,
+            password=password,
             api_key=key if key else None,
             change_ip_url=change_ip_url,
             min_rotation_interval=min_rotation_interval,

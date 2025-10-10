@@ -105,5 +105,20 @@ class HttpFetcherTestCase(unittest.TestCase):
         self.assertTrue(rotator.closed)
 
 
+class ProxyConfigTestCase(unittest.TestCase):
+    def test_httpx_proxy_includes_credentials(self) -> None:
+        proxy = ProxyConfig.from_endpoint("proxy.example.com:3128:alice:secret")
+        self.assertEqual(proxy.httpx_proxy(), "http://alice:secret@proxy.example.com:3128")
+
+    def test_proxy_key_override_preserves_credentials(self) -> None:
+        proxy = ProxyConfig.from_endpoint(
+            "proxy.example.com:3128:alice:secret",
+            api_key="rotate-key",
+        )
+        self.assertEqual(proxy.username, "alice")
+        self.assertEqual(proxy.password, "secret")
+        self.assertEqual(proxy.api_key, "rotate-key")
+
+
 if __name__ == "__main__":
     unittest.main()

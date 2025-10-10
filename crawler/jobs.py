@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .config import IngestConfig
+from .config import IngestConfig, ProxyConfig
 from models import Article
 
 LOGGER = logging.getLogger(__name__)
@@ -177,6 +177,7 @@ class SitemapJobLoader:
         max_sitemaps: int | None = None,
         max_urls_per_sitemap: int | None = None,
         request_timeout: float = 10.0,
+        proxy: ProxyConfig | None = None,
     ) -> None:
         self._sitemap_url = sitemap_url
         self._existing_urls = existing_urls or set()
@@ -186,6 +187,7 @@ class SitemapJobLoader:
         self._max_sitemaps = max_sitemaps
         self._max_urls_per_sitemap = max_urls_per_sitemap
         self._request_timeout = request_timeout
+        self._proxy = proxy
 
         self.stats = JobLoaderStats()
         self._seen_urls: set[str] = set()
@@ -201,7 +203,14 @@ class SitemapJobLoader:
             headers["User-Agent"] = self._user_agent
 
         try:
-            with httpx.Client(headers=headers or None, timeout=self._request_timeout) as client:
+            proxy_url = self._proxy.httpx_proxy() if self._proxy else None
+            client_kwargs: dict[str, object] = {
+                "headers": headers or None,
+                "timeout": self._request_timeout,
+            }
+            if proxy_url:
+                client_kwargs["proxy"] = proxy_url
+            with httpx.Client(**client_kwargs) as client:
                 yield from self._walk_sitemap(client, self._sitemap_url)
         except httpx.HTTPError as exc:
             LOGGER.error("Failed to fetch sitemap %s: %s", self._sitemap_url, exc)
@@ -309,6 +318,7 @@ class ThanhnienCategoryLoader:
         max_empty_pages: int | None = 2,
         request_timeout: float = 5.0,
         include_landing_page: bool = True,
+        proxy: ProxyConfig | None = None,
     ) -> None:
         self._categories = list(categories)
         self._existing_urls = existing_urls or set()
@@ -318,6 +328,7 @@ class ThanhnienCategoryLoader:
         self._max_empty_pages = max_empty_pages
         self._request_timeout = request_timeout
         self._include_landing_page = include_landing_page
+        self._proxy = proxy
 
         self.stats = JobLoaderStats()
         self._seen_urls: set[str] = set()
@@ -327,7 +338,14 @@ class ThanhnienCategoryLoader:
         self._seen_urls.clear()
 
         headers = {"User-Agent": self._user_agent} if self._user_agent else None
-        with httpx.Client(headers=headers, timeout=self._request_timeout) as client:
+        proxy_url = self._proxy.httpx_proxy() if self._proxy else None
+        client_kwargs: dict[str, object] = {
+            "headers": headers,
+            "timeout": self._request_timeout,
+        }
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        with httpx.Client(**client_kwargs) as client:
             for category in self._categories:
                 yield from self._iterate_category(client, category)
 
@@ -500,6 +518,7 @@ class ZnewsCategoryLoader:
         request_timeout: float = 5.0,
         duplicate_fingerprint_size: int = 3,
         stop_on_duplicate: bool = True,
+        proxy: ProxyConfig | None = None,
     ) -> None:
         self._categories = list(categories)
         self._existing_urls = existing_urls or set()
@@ -509,6 +528,7 @@ class ZnewsCategoryLoader:
         self._request_timeout = request_timeout
         self._duplicate_fingerprint_size = max(1, duplicate_fingerprint_size)
         self._stop_on_duplicate = stop_on_duplicate
+        self._proxy = proxy
 
         self.stats = JobLoaderStats()
         self._seen_urls: set[str] = set()
@@ -518,7 +538,14 @@ class ZnewsCategoryLoader:
         self._seen_urls.clear()
 
         headers = {"User-Agent": self._user_agent} if self._user_agent else None
-        with httpx.Client(headers=headers, timeout=self._request_timeout) as client:
+        proxy_url = self._proxy.httpx_proxy() if self._proxy else None
+        client_kwargs: dict[str, object] = {
+            "headers": headers,
+            "timeout": self._request_timeout,
+        }
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        with httpx.Client(**client_kwargs) as client:
             for category in self._categories:
                 yield from self._iterate_category(client, category)
 
@@ -744,6 +771,7 @@ def build_thanhnien_job_loader(config: IngestConfig, existing_urls: set[str]) ->
         max_pages=config.thanhnien.max_pages,
         max_empty_pages=config.thanhnien.max_empty_pages,
         request_timeout=config.timeout.request_timeout,
+        proxy=config.proxy,
     )
 
 
@@ -873,6 +901,7 @@ def build_znews_job_loader(config: IngestConfig, existing_urls: set[str]) -> Job
             max_sitemaps=config.sitemap_max_documents,
             max_urls_per_sitemap=config.sitemap_max_urls_per_document,
             request_timeout=config.timeout.request_timeout,
+            proxy=config.proxy,
         )
 
     catalog: dict[str, ZnewsCategoryDefinition] = {
@@ -904,6 +933,7 @@ def build_znews_job_loader(config: IngestConfig, existing_urls: set[str]) -> Job
         user_agent=config.user_agent,
         max_pages=config.znews.max_pages,
         request_timeout=config.timeout.request_timeout,
+        proxy=config.proxy,
     )
 
 

@@ -1,9 +1,10 @@
 import unittest
+from unittest.mock import patch
 
 import httpx
 
 from crawler.assets import AssetManager, AssetDownloadError
-from crawler.config import IngestConfig
+from crawler.config import IngestConfig, ProxyConfig
 
 
 class FakeResponse:
@@ -74,6 +75,21 @@ class AssetManagerResolveVideoTestCase(unittest.TestCase):
         resolved = manager._resolve_video_source(source)
 
         self.assertEqual(resolved, source)
+
+
+class AssetManagerProxyTestCase(unittest.TestCase):
+    def test_applies_proxy_configuration(self) -> None:
+        config = IngestConfig()
+        config.proxy = ProxyConfig.from_endpoint("127.0.0.1:8080")
+
+        with patch("crawler.assets.httpx.Client") as client_cls:
+            manager = AssetManager(config)
+            try:
+                client_cls.assert_called_once()
+                kwargs = client_cls.call_args.kwargs
+                self.assertEqual(kwargs.get("proxy"), config.proxy.httpx_proxy())
+            finally:
+                manager.close()
 
 
 if __name__ == "__main__":

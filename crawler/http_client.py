@@ -122,7 +122,7 @@ class HttpFetcher:
         if self._config.proxy:
             proxy_url = self._config.proxy.httpx_proxy()
         if proxy_url:
-            kwargs["proxies"] = proxy_url
+            kwargs["proxy"] = proxy_url
         if self._transport:
             kwargs["transport"] = self._transport
         return httpx.Client(**kwargs)

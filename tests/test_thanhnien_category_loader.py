@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import httpx
 
+from crawler.config import ProxyConfig
 from crawler.jobs import ThanhnienCategoryDefinition, ThanhnienCategoryLoader
 
 
@@ -173,6 +174,23 @@ class ThanhnienCategoryLoaderTestCase(unittest.TestCase):
                 "https://thanhnien.vn/timeline-article-185000000000000011.htm",
             ],
         )
+
+    def test_category_loader_passes_proxy_to_httpx_client(self) -> None:
+        proxy = ProxyConfig.from_endpoint("127.0.0.1:9191")
+        loader = ThanhnienCategoryLoader(
+            categories=[self.category],
+            max_pages=1,
+            request_timeout=1.0,
+            proxy=proxy,
+        )
+
+        with patch("crawler.jobs.httpx.Client") as client_cls:
+            client_instance = client_cls.return_value.__enter__.return_value
+            client_instance.get.side_effect = httpx.HTTPError("boom")
+            list(loader)
+
+        kwargs = client_cls.call_args.kwargs
+        self.assertEqual(kwargs.get("proxy"), proxy.httpx_proxy())
 
 
 if __name__ == "__main__":  # pragma: no cover - test runner entrypoint

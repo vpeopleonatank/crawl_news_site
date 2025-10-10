@@ -39,11 +39,15 @@ class AssetManager:
     def __init__(self, config: IngestConfig, client: httpx.Client | None = None) -> None:
         self._config = config
         if client is None:
-            self._client = httpx.Client(
-                timeout=config.timeout.asset_timeout,
-                headers={"User-Agent": config.user_agent},
-                follow_redirects=True,
-            )
+            proxy_url = config.proxy.httpx_proxy() if config.proxy else None
+            client_kwargs: dict[str, object] = {
+                "timeout": config.timeout.asset_timeout,
+                "headers": {"User-Agent": config.user_agent},
+                "follow_redirects": True,
+            }
+            if proxy_url:
+                client_kwargs["proxy"] = proxy_url
+            self._client = httpx.Client(**client_kwargs)
             self._owns_client = True
         else:
             self._client = client

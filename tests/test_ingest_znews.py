@@ -2,8 +2,11 @@ import argparse
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from crawler.config import IngestConfig
+import httpx
+
+from crawler.config import IngestConfig, ProxyConfig
 from crawler.ingest import build_config as build_generic_config
 from crawler.jobs import (
     NDJSONJobLoader,
@@ -151,6 +154,51 @@ class ZnewsJobLoaderFactoryTestCase(unittest.TestCase):
             loader = build_znews_job_loader(config, set())
 
             self.assertIsInstance(loader, NDJSONJobLoader)
+
+    def test_sitemap_loader_passes_proxy_to_httpx_client(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            config = IngestConfig(
+                jobs_file=Path("data/znews_jobs.ndjson"),
+                storage_root=Path(tmpdir) / "storage",
+                db_url="postgresql://user:pass@localhost/db",
+            )
+            config.jobs_file_provided = False
+            config.znews.use_categories = False
+            config.proxy = ProxyConfig.from_endpoint("127.0.0.1:8080")
+
+            loader = build_znews_job_loader(config, set())
+            self.assertIsInstance(loader, SitemapJobLoader)
+
+            with patch("crawler.jobs.httpx.Client") as client_cls:
+                client_instance = client_cls.return_value.__enter__.return_value
+                client_instance.get.side_effect = httpx.HTTPError("boom")
+                list(loader)
+
+            kwargs = client_cls.call_args.kwargs
+            self.assertEqual(kwargs.get("proxy"), config.proxy.httpx_proxy())
+
+    def test_category_loader_passes_proxy_to_httpx_client(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            config = IngestConfig(
+                jobs_file=Path("data/znews_jobs.ndjson"),
+                storage_root=Path(tmpdir) / "storage",
+                db_url="postgresql://user:pass@localhost/db",
+            )
+            config.jobs_file_provided = False
+            config.znews.use_categories = True
+            config.znews.selected_slugs = ("thoi-su",)
+            config.proxy = ProxyConfig.from_endpoint("127.0.0.1:8282")
+
+            loader = build_znews_job_loader(config, set())
+            self.assertIsInstance(loader, ZnewsCategoryLoader)
+
+            with patch("crawler.jobs.httpx.Client") as client_cls:
+                client_instance = client_cls.return_value.__enter__.return_value
+                client_instance.get.side_effect = httpx.HTTPError("boom")
+                list(loader)
+
+            kwargs = client_cls.call_args.kwargs
+            self.assertEqual(kwargs.get("proxy"), config.proxy.httpx_proxy())
 
 
 if __name__ == "__main__":  # pragma: no cover - test runner entrypoint

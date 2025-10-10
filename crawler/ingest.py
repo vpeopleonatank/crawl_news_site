@@ -304,6 +304,8 @@ def _build_task_payload(
             "scheme": config.proxy.scheme,
             "host": config.proxy.host,
             "port": config.proxy.port,
+            "username": config.proxy.username,
+            "password": config.proxy.password,
             "api_key": config.proxy.api_key,
             "change_ip_url": config.proxy.change_ip_url,
             "min_rotation_interval": config.proxy.min_rotation_interval,
