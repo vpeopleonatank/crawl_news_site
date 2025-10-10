@@ -127,6 +127,7 @@ class ThanhnienConfigTestCase(unittest.TestCase):
                 thanhnien_categories=None,
                 thanhnien_all_categories=False,
                 thanhnien_max_pages=None,
+                thanhnien_max_empty_pages=None,
             )
 
             config = build_thanhnien_config(args)
@@ -137,6 +138,7 @@ class ThanhnienConfigTestCase(unittest.TestCase):
             self.assertEqual(config.thanhnien.selected_slugs, ())
             self.assertFalse(config.thanhnien.crawl_all)
             self.assertEqual(config.thanhnien.max_pages, 10)
+            self.assertEqual(config.thanhnien.max_empty_pages, 2)
 
     def test_build_config_parses_category_flags(self) -> None:
         site = get_site_definition("thanhnien")
@@ -162,6 +164,7 @@ class ThanhnienConfigTestCase(unittest.TestCase):
                 thanhnien_categories="chinh-tri, THOI-SU-PHAP-LUAT",
                 thanhnien_all_categories=False,
                 thanhnien_max_pages=3,
+                thanhnien_max_empty_pages=1,
             )
 
             config = build_thanhnien_config(args)
@@ -170,6 +173,7 @@ class ThanhnienConfigTestCase(unittest.TestCase):
             self.assertEqual(config.thanhnien.selected_slugs, ("chinh-tri", "thoi-su-phap-luat"))
             self.assertFalse(config.thanhnien.crawl_all)
             self.assertEqual(config.thanhnien.max_pages, 3)
+            self.assertEqual(config.thanhnien.max_empty_pages, 1)
 
 
 class ThanhnienJobLoaderFactoryTestCase(unittest.TestCase):

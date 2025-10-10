@@ -137,6 +137,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum number of timeline pages to fetch per Thanhnien category (0 or negative disables the limit; default is 10).",
     )
+    parser.add_argument(
+        "--thanhnien-max-empty-pages",
+        type=int,
+        default=None,
+        help="Maximum consecutive Thanhnien timeline pages allowed without emitting new articles before stopping (0 or negative disables the guard; default is 2).",
+    )
     return parser
 
 
@@ -220,6 +226,9 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
         config.thanhnien.crawl_all = bool(getattr(args, "thanhnien_all_categories", False))
         config.thanhnien.max_pages = _apply_sitemap_limit(
             config.thanhnien.max_pages, getattr(args, "thanhnien_max_pages", None)
+        )
+        config.thanhnien.max_empty_pages = _apply_sitemap_limit(
+            config.thanhnien.max_empty_pages, getattr(args, "thanhnien_max_empty_pages", None)
         )
     elif site.slug == "znews":
         selected_slugs = _parse_category_slugs(getattr(args, "znews_categories", None))

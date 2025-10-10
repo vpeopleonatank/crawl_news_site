@@ -107,6 +107,7 @@ class ThanhnienCategoryConfig:
     selected_slugs: tuple[str, ...] = ()
     crawl_all: bool = False
     max_pages: int | None = 10
+    max_empty_pages: int | None = 2
 
 
 @dataclass(slots=True)

@@ -306,6 +306,7 @@ class ThanhnienCategoryLoader:
         resume: bool = False,
         user_agent: str | None = None,
         max_pages: int | None = 10,
+        max_empty_pages: int | None = 2,
         request_timeout: float = 5.0,
         include_landing_page: bool = True,
     ) -> None:
@@ -314,6 +315,7 @@ class ThanhnienCategoryLoader:
         self._resume = resume
         self._user_agent = user_agent
         self._max_pages = max_pages
+        self._max_empty_pages = max_empty_pages
         self._request_timeout = request_timeout
         self._include_landing_page = include_landing_page
 
@@ -357,7 +359,7 @@ class ThanhnienCategoryLoader:
 
             if not emitted_on_page:
                 consecutive_empty_pages += 1
-                if consecutive_empty_pages >= 2:
+                if self._max_empty_pages is not None and consecutive_empty_pages >= self._max_empty_pages:
                     break
             else:
                 consecutive_empty_pages = 0
@@ -740,6 +742,7 @@ def build_thanhnien_job_loader(config: IngestConfig, existing_urls: set[str]) ->
         resume=config.resume,
         user_agent=config.user_agent,
         max_pages=config.thanhnien.max_pages,
+        max_empty_pages=config.thanhnien.max_empty_pages,
         request_timeout=config.timeout.request_timeout,
     )
 

@@ -49,6 +49,7 @@ class ZnewsConfigTestCase(unittest.TestCase):
                 thanhnien_categories=None,
                 thanhnien_all_categories=False,
                 thanhnien_max_pages=None,
+                thanhnien_max_empty_pages=None,
             )
 
             config = build_znews_config(args)
@@ -88,6 +89,7 @@ class ZnewsConfigTestCase(unittest.TestCase):
                 thanhnien_categories=None,
                 thanhnien_all_categories=False,
                 thanhnien_max_pages=None,
+                thanhnien_max_empty_pages=None,
             )
 
             config = build_znews_config(args)

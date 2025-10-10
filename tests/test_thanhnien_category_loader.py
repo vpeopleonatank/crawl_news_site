@@ -77,6 +77,14 @@ class ThanhnienCategoryLoaderTestCase(unittest.TestCase):
                 </div>
                 """,
             ),
+            self.category.timeline_url(3): FakeResponse(
+                self.category.timeline_url(3),
+                """
+                <div class="box-category-item">
+                    <a href="/timeline-article-185000000000000004.htm">Timeline article 3</a>
+                </div>
+                """,
+            ),
         }
 
     def test_category_loader_emits_unique_articles_respecting_resume(self) -> None:
@@ -103,6 +111,68 @@ class ThanhnienCategoryLoaderTestCase(unittest.TestCase):
         self.assertEqual(loader.stats.emitted, 2)
         self.assertEqual(loader.stats.skipped_existing, 1)
         self.assertEqual(loader.stats.skipped_duplicate, 1)
+
+    def test_category_loader_continues_when_empty_guard_disabled(self) -> None:
+        category = self.category
+        timeline_page_1 = category.timeline_url(1)
+        timeline_page_2 = category.timeline_url(2)
+        timeline_page_3 = category.timeline_url(3)
+        timeline_page_4 = category.timeline_url(4)
+
+        responses = {
+            timeline_page_1: FakeResponse(
+                timeline_page_1,
+                """
+                <div class="box-category-item">
+                    <a href="/timeline-article-185000000000000010.htm">Timeline article 10</a>
+                </div>
+                """,
+            ),
+            timeline_page_2: FakeResponse(
+                timeline_page_2,
+                """
+                <div class="box-category-item">
+                    <a href="/timeline-article-185000000000000010.htm">Duplicate article</a>
+                </div>
+                """,
+            ),
+            timeline_page_3: FakeResponse(
+                timeline_page_3,
+                """
+                <div class="box-category-item">
+                    <a href="/timeline-article-185000000000000010.htm">Duplicate article</a>
+                </div>
+                """,
+            ),
+            timeline_page_4: FakeResponse(
+                timeline_page_4,
+                """
+                <div class="box-category-item">
+                    <a href="/timeline-article-185000000000000011.htm">Timeline article 11</a>
+                </div>
+                """,
+            ),
+        }
+
+        loader = ThanhnienCategoryLoader(
+            categories=[category],
+            max_pages=4,
+            max_empty_pages=None,
+            request_timeout=1.0,
+            include_landing_page=False,
+        )
+
+        with patch("crawler.jobs.httpx.Client", return_value=FakeClient(responses)):
+            jobs = list(loader)
+
+        urls = [job.url for job in jobs]
+        self.assertEqual(
+            urls,
+            [
+                "https://thanhnien.vn/timeline-article-185000000000000010.htm",
+                "https://thanhnien.vn/timeline-article-185000000000000011.htm",
+            ],
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - test runner entrypoint
