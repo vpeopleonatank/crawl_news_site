@@ -422,6 +422,209 @@ class ThanhnienCategoryLoader:
         return urls
 
 
+_ZNEWS_BASE_URL = "https://znews.vn"
+_ZNEWS_ARTICLE_PATTERN = re.compile(r"^https?://(?:[^./]+\.)?znews\.vn/[^?#]+-(?:post|news|video)\d+\.html$", re.IGNORECASE)
+
+
+def _normalize_znews_url(raw_url: str) -> str:
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return _ZNEWS_BASE_URL
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_ZNEWS_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_ZNEWS_BASE_URL}/", cleaned)
+    return cleaned
+
+
+def _normalize_znews_article_href(raw_href: str | None) -> str | None:
+    if not raw_href:
+        return None
+
+    cleaned = raw_href.strip()
+    if not cleaned or cleaned.lower().startswith(("javascript:", "mailto:")):
+        return None
+
+    cleaned = cleaned.split("#", 1)[0].split("?", 1)[0]
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_ZNEWS_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_ZNEWS_BASE_URL}/", cleaned)
+
+    if not _ZNEWS_ARTICLE_PATTERN.match(cleaned):
+        return None
+    return cleaned
+
+
+@dataclass(slots=True)
+class ZnewsCategoryDefinition:
+    slug: str
+    name: str
+    landing_url: str
+
+    def normalized_landing_url(self) -> str:
+        return _normalize_znews_url(self.landing_url)
+
+    def page_url(self, page: int) -> str:
+        landing = self.normalized_landing_url()
+        if page <= 1:
+            return landing
+
+        if landing.endswith(".html"):
+            base = landing[: -len(".html")]
+        else:
+            base = landing.rstrip("/")
+        return f"{base}/trang{page}.html"
+
+
+class ZnewsCategoryLoader:
+    """Iterate Znews category landing pages and paginate to collect article URLs."""
+
+    def __init__(
+        self,
+        categories: Sequence[ZnewsCategoryDefinition],
+        *,
+        existing_urls: set[str] | None = None,
+        resume: bool = False,
+        user_agent: str | None = None,
+        max_pages: int | None = 50,
+        request_timeout: float = 5.0,
+        duplicate_fingerprint_size: int = 3,
+        stop_on_duplicate: bool = True,
+    ) -> None:
+        self._categories = list(categories)
+        self._existing_urls = existing_urls or set()
+        self._resume = resume
+        self._user_agent = user_agent
+        self._max_pages = max_pages
+        self._request_timeout = request_timeout
+        self._duplicate_fingerprint_size = max(1, duplicate_fingerprint_size)
+        self._stop_on_duplicate = stop_on_duplicate
+
+        self.stats = JobLoaderStats()
+        self._seen_urls: set[str] = set()
+
+    def __iter__(self) -> Iterator[ArticleJob]:
+        self.stats = JobLoaderStats()
+        self._seen_urls.clear()
+
+        headers = {"User-Agent": self._user_agent} if self._user_agent else None
+        with httpx.Client(headers=headers, timeout=self._request_timeout) as client:
+            for category in self._categories:
+                yield from self._iterate_category(client, category)
+
+    def _iterate_category(self, client: httpx.Client, category: ZnewsCategoryDefinition) -> Iterator[ArticleJob]:
+        previous_fingerprint: list[str] | None = None
+        emitted_before = self.stats.emitted
+        skipped_existing_before = self.stats.skipped_existing
+        skipped_duplicate_before = self.stats.skipped_duplicate
+
+        page = 1
+        consecutive_empty_pages = 0
+        while True:
+            if self._max_pages is not None and page > self._max_pages:
+                break
+
+            page_url = category.page_url(page)
+            html = self._fetch_html(client, page_url)
+            if not html:
+                break
+
+            urls = self._extract_article_urls(html)
+            if not urls:
+                consecutive_empty_pages += 1
+                if consecutive_empty_pages >= 2:
+                    break
+                page += 1
+                continue
+
+            consecutive_empty_pages = 0
+            fingerprint = urls[: self._duplicate_fingerprint_size]
+            if (
+                self._stop_on_duplicate
+                and previous_fingerprint is not None
+                and fingerprint
+                and fingerprint == previous_fingerprint
+            ):
+                LOGGER.info(
+                    "Znews category '%s': detected duplicate pagination at %s; stopping.",
+                    category.slug,
+                    page_url,
+                )
+                break
+            if fingerprint:
+                previous_fingerprint = fingerprint
+
+            for job in self._emit_jobs_from_urls(urls):
+                yield job
+
+            page += 1
+
+        LOGGER.info(
+            "Znews category '%s': emitted=%d skipped_existing=%d skipped_duplicate=%d",
+            category.slug,
+            self.stats.emitted - emitted_before,
+            self.stats.skipped_existing - skipped_existing_before,
+            self.stats.skipped_duplicate - skipped_duplicate_before,
+        )
+
+    def _fetch_html(self, client: httpx.Client, url: str) -> str:
+        try:
+            response = client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            LOGGER.warning("Znews category request failed (%s): %s", url, exc)
+            return ""
+        except httpx.HTTPError as exc:
+            LOGGER.warning("Znews category request error (%s): %s", url, exc)
+            return ""
+        return response.text.strip()
+
+    def _emit_jobs_from_urls(self, urls: Sequence[str]) -> Iterator[ArticleJob]:
+        for url in urls:
+            self.stats.total += 1
+
+            if url in self._seen_urls:
+                self.stats.skipped_duplicate += 1
+                continue
+            self._seen_urls.add(url)
+
+            if self._resume and url in self._existing_urls:
+                self.stats.skipped_existing += 1
+                continue
+
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None)
+            self.stats.emitted += 1
+            yield job
+
+    def _extract_article_urls(self, html: str) -> list[str]:
+        soup = BeautifulSoup(html, "html.parser")
+        urls: list[str] = []
+        seen_local: set[str] = set()
+
+        for anchor in soup.find_all("a"):
+            primary_href = anchor.get("data-utm-src") or anchor.get("data-utm-source") or anchor.get("href")
+            normalized = _normalize_znews_article_href(primary_href)
+            if not normalized and primary_href:
+                backup_href = anchor.get("href") if primary_href != anchor.get("href") else None
+                normalized = _normalize_znews_article_href(backup_href)
+            if not normalized:
+                continue
+            if normalized in seen_local:
+                continue
+            seen_local.add(normalized)
+            urls.append(normalized)
+
+        return urls
+
+
 _DEFAULT_THANHNIEN_CATEGORY_SLUGS: tuple[str, ...] = ("chinh-tri", "thoi-su-phap-luat")
 _DEFAULT_THANHNIEN_CATEGORIES: tuple[ThanhnienCategoryDefinition, ...] = (
     ThanhnienCategoryDefinition(
@@ -537,6 +740,166 @@ def build_thanhnien_job_loader(config: IngestConfig, existing_urls: set[str]) ->
         resume=config.resume,
         user_agent=config.user_agent,
         max_pages=config.thanhnien.max_pages,
+        request_timeout=config.timeout.request_timeout,
+    )
+
+
+_DEFAULT_ZNEWS_CATEGORY_SLUGS: tuple[str, ...] = (
+    "thoi-su",
+    "the-gioi",
+    "kinh-doanh",
+    "cong-nghe",
+    "the-thao",
+    "giai-tri",
+    "doi-song",
+    "phap-luat",
+)
+_DEFAULT_ZNEWS_CATEGORIES: tuple[ZnewsCategoryDefinition, ...] = (
+    ZnewsCategoryDefinition(
+        slug="thoi-su",
+        name="Thời sự",
+        landing_url=_normalize_znews_url("https://znews.vn/thoi-su.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="the-gioi",
+        name="Thế giới",
+        landing_url=_normalize_znews_url("https://znews.vn/the-gioi.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="kinh-doanh",
+        name="Kinh doanh",
+        landing_url=_normalize_znews_url("https://znews.vn/kinh-doanh.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="cong-nghe",
+        name="Công nghệ",
+        landing_url=_normalize_znews_url("https://znews.vn/cong-nghe.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="the-thao",
+        name="Thể thao",
+        landing_url=_normalize_znews_url("https://znews.vn/the-thao.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="giai-tri",
+        name="Giải trí",
+        landing_url=_normalize_znews_url("https://znews.vn/giai-tri.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="doi-song",
+        name="Đời sống",
+        landing_url=_normalize_znews_url("https://znews.vn/doi-song.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="phap-luat",
+        name="Pháp luật",
+        landing_url=_normalize_znews_url("https://lifestyle.znews.vn/phap-luat.html"),
+    ),
+)
+
+
+def _load_znews_category_catalog(catalog_path: Path) -> dict[str, ZnewsCategoryDefinition]:
+    try:
+        raw_payload = catalog_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Znews category catalog not found: {catalog_path}") from exc
+
+    try:
+        records = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid Znews category catalog: {exc}") from exc
+
+    catalog: dict[str, ZnewsCategoryDefinition] = {}
+    for entry in records:
+        slug = entry.get("slug")
+        name = entry.get("name") or ""
+        landing_url = entry.get("landing_url") or ""
+
+        if not isinstance(slug, str) or not slug:
+            raise ValueError("Category catalog entries must include a non-empty 'slug'")
+
+        definition = ZnewsCategoryDefinition(
+            slug=slug.strip().lower(),
+            name=name.strip() or slug,
+            landing_url=_normalize_znews_url(landing_url),
+        )
+        catalog[definition.slug] = definition
+
+    if not catalog:
+        raise ValueError("Znews category catalog is empty")
+    return catalog
+
+
+def _select_znews_categories(
+    config: IngestConfig, catalog: dict[str, ZnewsCategoryDefinition]
+) -> list[ZnewsCategoryDefinition]:
+    if config.znews.crawl_all:
+        selected_slugs = list(catalog.keys())
+    elif config.znews.selected_slugs:
+        selected_slugs = list(config.znews.selected_slugs)
+    else:
+        selected_slugs = [slug for slug in _DEFAULT_ZNEWS_CATEGORY_SLUGS if slug in catalog]
+
+    if not selected_slugs:
+        raise ValueError("No Znews categories selected. Provide --znews-categories or update the category catalog.")
+
+    missing = [slug for slug in selected_slugs if slug not in catalog]
+    if missing:
+        raise ValueError(f"Unknown Znews categories requested: {', '.join(missing)}")
+
+    return [catalog[slug] for slug in selected_slugs]
+
+
+def build_znews_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
+    if config.jobs_file_provided:
+        LOGGER.info("Znews jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
+        return NDJSONJobLoader(
+            jobs_file=config.jobs_file,
+            existing_urls=existing_urls,
+            resume=config.resume,
+        )
+
+    if not config.znews.use_categories:
+        LOGGER.info("Using Znews sitemap loader (category pagination disabled)")
+        return SitemapJobLoader(
+            sitemap_url="https://znews.vn/sitemap/sitemap.xml",
+            existing_urls=existing_urls,
+            resume=config.resume,
+            user_agent=config.user_agent,
+            allowed_patterns=("sitemap-article", "sitemap-news"),
+            max_sitemaps=config.sitemap_max_documents,
+            max_urls_per_sitemap=config.sitemap_max_urls_per_document,
+            request_timeout=config.timeout.request_timeout,
+        )
+
+    catalog: dict[str, ZnewsCategoryDefinition] = {
+        category.slug: category for category in _DEFAULT_ZNEWS_CATEGORIES
+    }
+
+    catalog_path = Path("data/znews_categories.json")
+    if catalog_path.exists():
+        try:
+            catalog = _load_znews_category_catalog(catalog_path)
+            LOGGER.info("Loaded Znews category catalog from %s", catalog_path)
+        except ValueError as exc:
+            LOGGER.warning("Ignoring invalid Znews category catalog at %s: %s", catalog_path, exc)
+
+    try:
+        categories = _select_znews_categories(config, catalog)
+    except ValueError as exc:
+        raise ValueError(f"Failed to select Znews categories: {exc}") from exc
+
+    LOGGER.info(
+        "Initialized ZnewsCategoryLoader with categories: %s",
+        ", ".join(category.slug for category in categories),
+    )
+
+    return ZnewsCategoryLoader(
+        categories=categories,
+        existing_urls=existing_urls,
+        resume=config.resume,
+        user_agent=config.user_agent,
+        max_pages=config.znews.max_pages,
         request_timeout=config.timeout.request_timeout,
     )
 

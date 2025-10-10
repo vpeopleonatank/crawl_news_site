@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, TYPE_CHECKING
 
-from .jobs import SitemapJobLoader, build_thanhnien_job_loader
+from .jobs import build_thanhnien_job_loader, build_znews_job_loader
 from .parsers import ArticleParser
 from .parsers.thanhnien import ThanhnienParser
 from .parsers.znews import ZnewsParser
@@ -55,16 +55,7 @@ _SITE_REGISTRY: Dict[str, SiteDefinition] = {
         parser_factory=ZnewsParser,
         default_jobs_file=Path("data/znews_jobs.ndjson"),
         default_user_agent="znews-ingestor/1.0",
-        job_loader_factory=lambda config, existing: SitemapJobLoader(
-            sitemap_url="https://znews.vn/sitemap/sitemap.xml",
-            existing_urls=existing,
-            resume=config.resume,
-            user_agent=config.user_agent,
-            allowed_patterns=("sitemap-article", "sitemap-news"),
-            max_sitemaps=config.sitemap_max_documents,
-            max_urls_per_sitemap=config.sitemap_max_urls_per_document,
-            request_timeout=config.timeout.request_timeout,
-        ),
+        job_loader_factory=build_znews_job_loader,
     ),
 }
 

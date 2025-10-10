@@ -110,6 +110,16 @@ class ThanhnienCategoryConfig:
 
 
 @dataclass(slots=True)
+class ZnewsCategoryConfig:
+    """Category selection controls for Znews ingestion."""
+
+    use_categories: bool = False
+    selected_slugs: tuple[str, ...] = ()
+    crawl_all: bool = False
+    max_pages: int | None = 50
+
+
+@dataclass(slots=True)
 class IngestConfig:
     jobs_file: Path = DEFAULT_JOBS_FILE
     storage_root: Path = DEFAULT_STORAGE_ROOT
@@ -128,6 +138,7 @@ class IngestConfig:
     playwright_timeout: float = 30.0
     jobs_file_provided: bool = False
     thanhnien: ThanhnienCategoryConfig = field(default_factory=ThanhnienCategoryConfig)
+    znews: ZnewsCategoryConfig = field(default_factory=ZnewsCategoryConfig)
 
     def ensure_directories(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)

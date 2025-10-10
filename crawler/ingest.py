@@ -99,6 +99,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Maximum URLs to read from each sitemap document (0 or negative disables the limit; defaults to site configuration).",
     )
     parser.add_argument(
+        "--znews-use-categories",
+        action="store_true",
+        help="Fetch Znews article URLs via category pagination instead of sitemaps.",
+    )
+    parser.add_argument(
+        "--znews-categories",
+        type=str,
+        default=None,
+        help="Comma-separated list of Znews category slugs to ingest when using category pagination.",
+    )
+    parser.add_argument(
+        "--znews-all-categories",
+        action="store_true",
+        help="Crawl all known Znews categories (requires category pagination mode).",
+    )
+    parser.add_argument(
+        "--znews-max-pages",
+        type=int,
+        default=None,
+        help="Maximum number of pages to fetch per Znews category (0 or negative disables the limit; default is 50).",
+    )
+    parser.add_argument(
         "--thanhnien-categories",
         type=str,
         default=None,
@@ -152,7 +174,7 @@ def _parse_proxy_config(args: argparse.Namespace) -> ProxyConfig | None:
     return proxy_config
 
 
-def _parse_thanhnien_categories(raw_value: str | None) -> tuple[str, ...]:
+def _parse_category_slugs(raw_value: str | None) -> tuple[str, ...]:
     if not raw_value:
         return ()
 
@@ -163,6 +185,10 @@ def _parse_thanhnien_categories(raw_value: str | None) -> tuple[str, ...]:
             continue
         selected.append(slug)
     return tuple(selected)
+
+
+def _parse_thanhnien_categories(raw_value: str | None) -> tuple[str, ...]:
+    return _parse_category_slugs(raw_value)
 
 
 def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig:
@@ -195,6 +221,16 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
         config.thanhnien.max_pages = _apply_sitemap_limit(
             config.thanhnien.max_pages, getattr(args, "thanhnien_max_pages", None)
         )
+    elif site.slug == "znews":
+        selected_slugs = _parse_category_slugs(getattr(args, "znews_categories", None))
+        config.znews.selected_slugs = selected_slugs
+        config.znews.crawl_all = bool(getattr(args, "znews_all_categories", False))
+        config.znews.max_pages = _apply_sitemap_limit(
+            config.znews.max_pages, getattr(args, "znews_max_pages", None)
+        )
+
+        use_categories_flag = bool(getattr(args, "znews_use_categories", False))
+        config.znews.use_categories = bool(selected_slugs or config.znews.crawl_all or use_categories_flag)
     return config
 
 
