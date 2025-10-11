@@ -224,15 +224,25 @@ def _parse_kenh14_categories(raw_value: str | None) -> tuple[str, ...]:
     return _parse_category_slugs(raw_value)
 
 
+def _derive_storage_root(base_root: Path, site_slug: str) -> Path:
+    """Ensure per-site isolation by appending the site slug when needed."""
+
+    if base_root.name.lower() == site_slug.lower():
+        return base_root
+    return base_root / site_slug
+
+
 def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig:
     jobs_file = args.jobs_file or site.default_jobs_file
+    storage_root = _derive_storage_root(args.storage_root, site.slug)
     config = IngestConfig(
         jobs_file=jobs_file,
-        storage_root=args.storage_root,
+        storage_root=storage_root,
         db_url=args.db_url,
         resume=args.resume,
         raw_html_cache_enabled=args.raw_html_cache,
         user_agent=site.default_user_agent,
+        log_dir=storage_root / "logs",
     )
 
     config.proxy = _parse_proxy_config(args)
