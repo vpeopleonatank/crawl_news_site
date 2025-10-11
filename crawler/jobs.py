@@ -45,6 +45,11 @@ class JobLoaderStats:
 
 _THANHNIEN_BASE_URL = "https://thanhnien.vn"
 _THANHNIEN_ARTICLE_PATTERN = re.compile(r"^https?://(?:[^./]+\.)?thanhnien\.vn/[^?#]+-185\d+\.htm$")
+_KENH14_BASE_URL = "https://kenh14.vn"
+_KENH14_ARTICLE_PATTERN = re.compile(
+    r"^https?://(?:[^./]+\.)?kenh14\.vn/[^?#]+-\d{6,}\.chn$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -59,6 +64,20 @@ class ThanhnienCategoryDefinition:
 
     def timeline_url(self, page: int) -> str:
         return f"{_THANHNIEN_BASE_URL}/timelinelist/{self.category_id}/{page}.htm"
+
+
+@dataclass(slots=True)
+class Kenh14CategoryDefinition:
+    slug: str
+    name: str
+    timeline_id: int
+    landing_url: str
+
+    def normalized_landing_url(self) -> str:
+        return _normalize_kenh14_url(self.landing_url)
+
+    def timeline_url(self, page: int) -> str:
+        return f"{_KENH14_BASE_URL}/timeline/laytinmoitronglist-{self.timeline_id}/page-{page}.chn"
 
 
 def _normalize_thanhnien_url(raw_url: str) -> str:
@@ -90,6 +109,43 @@ def _normalize_article_href(raw_href: str | None) -> str | None:
     elif not cleaned.startswith("http"):
         cleaned = urljoin(f"{_THANHNIEN_BASE_URL}/", cleaned)
     if not _THANHNIEN_ARTICLE_PATTERN.match(cleaned):
+        return None
+    return cleaned
+
+
+def _normalize_kenh14_url(raw_url: str) -> str:
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return _KENH14_BASE_URL
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_KENH14_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_KENH14_BASE_URL}/", cleaned)
+    return cleaned
+
+
+def _normalize_kenh14_article_href(raw_href: str | None) -> str | None:
+    if not raw_href:
+        return None
+
+    cleaned = raw_href.strip()
+    if not cleaned or cleaned.lower().startswith(("javascript:", "mailto:")):
+        return None
+
+    cleaned = cleaned.split("#", 1)[0].split("?", 1)[0]
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_KENH14_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_KENH14_BASE_URL}/", cleaned)
+
+    if not _KENH14_ARTICLE_PATTERN.match(cleaned):
         return None
     return cleaned
 
@@ -442,6 +498,196 @@ class ThanhnienCategoryLoader:
         return urls
 
 
+class Kenh14CategoryLoader:
+    """Iterate Kenh14 category landing pages and timeline endpoints."""
+
+    def __init__(
+        self,
+        categories: Sequence[Kenh14CategoryDefinition],
+        *,
+        existing_urls: set[str] | None = None,
+        resume: bool = False,
+        user_agent: str | None = None,
+        max_pages: int | None = 600,
+        max_empty_pages: int | None = 3,
+        request_timeout: float = 5.0,
+        include_landing_page: bool = True,
+        proxy: ProxyConfig | None = None,
+    ) -> None:
+        self._categories = list(categories)
+        self._existing_urls = existing_urls or set()
+        self._resume = resume
+        self._user_agent = user_agent
+        self._max_pages = max_pages
+        self._max_empty_pages = max_empty_pages
+        self._request_timeout = request_timeout
+        self._include_landing_page = include_landing_page
+        self._proxy = proxy
+
+        self.stats = JobLoaderStats()
+        self._seen_urls: set[str] = set()
+
+    def __iter__(self) -> Iterator[ArticleJob]:
+        self.stats = JobLoaderStats()
+        self._seen_urls.clear()
+
+        headers = {"User-Agent": self._user_agent} if self._user_agent else None
+        proxy_url = self._proxy.httpx_proxy() if self._proxy else None
+        client_kwargs: dict[str, object] = {
+            "headers": headers,
+            "timeout": self._request_timeout,
+        }
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        with httpx.Client(**client_kwargs) as client:
+            for category in self._categories:
+                yield from self._iterate_category(client, category)
+
+    def _iterate_category(self, client: httpx.Client, category: Kenh14CategoryDefinition) -> Iterator[ArticleJob]:
+        emitted_before = self.stats.emitted
+        skipped_existing_before = self.stats.skipped_existing
+        skipped_duplicate_before = self.stats.skipped_duplicate
+
+        if self._include_landing_page:
+            landing_html = self._fetch_payload(client, category.normalized_landing_url())
+            if landing_html:
+                yield from self._emit_jobs_from_html(landing_html)
+
+        page = 1
+        consecutive_empty_pages = 0
+        while True:
+            if self._max_pages is not None and page > self._max_pages:
+                break
+
+            timeline_url = category.timeline_url(page)
+            html = self._fetch_payload(client, timeline_url)
+            if not html:
+                consecutive_empty_pages += 1
+                if self._max_empty_pages is not None and consecutive_empty_pages >= self._max_empty_pages:
+                    break
+                page += 1
+                continue
+
+            emitted_on_page = False
+            for job in self._emit_jobs_from_html(html):
+                emitted_on_page = True
+                yield job
+
+            if not emitted_on_page:
+                consecutive_empty_pages += 1
+                if self._max_empty_pages is not None and consecutive_empty_pages >= self._max_empty_pages:
+                    break
+            else:
+                consecutive_empty_pages = 0
+
+            page += 1
+
+        LOGGER.info(
+            "Kenh14 category '%s': emitted=%d skipped_existing=%d skipped_duplicate=%d",
+            category.slug,
+            self.stats.emitted - emitted_before,
+            self.stats.skipped_existing - skipped_existing_before,
+            self.stats.skipped_duplicate - skipped_duplicate_before,
+        )
+
+    def _fetch_payload(self, client: httpx.Client, url: str) -> str:
+        try:
+            response = client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            LOGGER.warning("Kenh14 category request failed (%s): %s", url, exc)
+            return ""
+        except httpx.HTTPError as exc:
+            LOGGER.warning("Kenh14 category request error (%s): %s", url, exc)
+            return ""
+
+        text = response.text.strip()
+        if not text:
+            return ""
+
+        if text.startswith("{") or text.startswith("["):
+            try:
+                payload = response.json()
+            except ValueError:
+                return text
+            html_fragment = self._extract_html_from_payload(payload)
+            if html_fragment:
+                return html_fragment
+        return text
+
+    def _extract_html_from_payload(self, payload: object) -> str:
+        fragments: list[str] = []
+        stack: list[object] = [payload]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, str):
+                cleaned = current.strip()
+                if cleaned:
+                    fragments.append(cleaned)
+                continue
+            if isinstance(current, dict):
+                for key in ("html", "data", "content", "Content", "items", "list", "body", "Body"):
+                    if key in current:
+                        stack.append(current[key])
+                for value in current.values():
+                    if isinstance(value, (dict, list, tuple, set, str)):
+                        stack.append(value)
+                continue
+            if isinstance(current, (list, tuple, set)):
+                stack.extend(current)
+        return "".join(fragments)
+
+    def _emit_jobs_from_html(self, html: str) -> Iterator[ArticleJob]:
+        for url in self._extract_article_urls(html):
+            self.stats.total += 1
+
+            if url in self._seen_urls:
+                self.stats.skipped_duplicate += 1
+                continue
+            self._seen_urls.add(url)
+
+            if self._resume and url in self._existing_urls:
+                self.stats.skipped_existing += 1
+                continue
+
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None)
+            self.stats.emitted += 1
+            yield job
+
+    def _extract_article_urls(self, html: str) -> list[str]:
+        soup = BeautifulSoup(html, "html.parser")
+        urls: list[str] = []
+        seen_local: set[str] = set()
+
+        candidate_attributes = (
+            "data-io-canonical-url",
+            "data-link",
+            "data-url",
+            "data-href",
+            "data-src",
+            "href",
+        )
+
+        for anchor in soup.find_all("a"):
+            normalized: str | None = None
+            for attribute in candidate_attributes:
+                if attribute not in anchor.attrs:
+                    continue
+                normalized = _normalize_kenh14_article_href(anchor.get(attribute))
+                if normalized:
+                    break
+
+            if not normalized:
+                continue
+            if normalized in seen_local:
+                continue
+
+            seen_local.add(normalized)
+            urls.append(normalized)
+
+        return urls
+
+
 _ZNEWS_BASE_URL = "https://znews.vn"
 _ZNEWS_ARTICLE_PATTERN = re.compile(r"^https?://(?:[^./]+\.)?znews\.vn/[^?#]+-(?:post|news|video)\d+\.html$", re.IGNORECASE)
 
@@ -652,6 +898,121 @@ class ZnewsCategoryLoader:
             urls.append(normalized)
 
         return urls
+
+
+_DEFAULT_KENH14_CATEGORY_SLUGS: tuple[str, ...] = ("phap-luat",)
+_DEFAULT_KENH14_CATEGORIES: tuple[Kenh14CategoryDefinition, ...] = (
+    Kenh14CategoryDefinition(
+        slug="phap-luat",
+        name="Pháp luật",
+        timeline_id=215195,
+        landing_url="https://kenh14.vn/xa-hoi/phap-luat.chn",
+    ),
+)
+
+
+def _load_kenh14_category_catalog(catalog_path: Path) -> dict[str, Kenh14CategoryDefinition]:
+    try:
+        raw_payload = catalog_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Kenh14 category catalog not found: {catalog_path}") from exc
+
+    try:
+        records = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid Kenh14 category catalog: {exc}") from exc
+
+    catalog: dict[str, Kenh14CategoryDefinition] = {}
+    for entry in records:
+        slug = entry.get("slug")
+        name = entry.get("name") or ""
+        timeline_id = entry.get("timeline_id")
+        landing_url = entry.get("landing_url") or ""
+
+        if not isinstance(slug, str) or not slug:
+            raise ValueError("Category catalog entries must include a non-empty 'slug'")
+        if not isinstance(timeline_id, int):
+            try:
+                timeline_id = int(timeline_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid timeline_id for slug '{slug}': {entry.get('timeline_id')}") from exc
+
+        definition = Kenh14CategoryDefinition(
+            slug=slug.strip().lower(),
+            name=name.strip() or slug,
+            timeline_id=timeline_id,
+            landing_url=_normalize_kenh14_url(landing_url),
+        )
+        catalog[definition.slug] = definition
+
+    if not catalog:
+        raise ValueError("Kenh14 category catalog is empty")
+    return catalog
+
+
+def _select_kenh14_categories(
+    config: IngestConfig, catalog: dict[str, Kenh14CategoryDefinition]
+) -> list[Kenh14CategoryDefinition]:
+    if config.kenh14.crawl_all:
+        selected_slugs = list(catalog.keys())
+    elif config.kenh14.selected_slugs:
+        selected_slugs = list(config.kenh14.selected_slugs)
+    else:
+        selected_slugs = [slug for slug in _DEFAULT_KENH14_CATEGORY_SLUGS if slug in catalog]
+
+    if not selected_slugs:
+        raise ValueError(
+            "No Kenh14 categories selected. Provide --kenh14-categories or update the category catalog."
+        )
+
+    missing = [slug for slug in selected_slugs if slug not in catalog]
+    if missing:
+        raise ValueError(f"Unknown Kenh14 categories requested: {', '.join(missing)}")
+
+    return [catalog[slug] for slug in selected_slugs]
+
+
+def build_kenh14_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
+    if config.jobs_file_provided:
+        LOGGER.info("Kenh14 jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
+        return NDJSONJobLoader(
+            jobs_file=config.jobs_file,
+            existing_urls=existing_urls,
+            resume=config.resume,
+        )
+
+    catalog: dict[str, Kenh14CategoryDefinition] = {
+        category.slug: category for category in _DEFAULT_KENH14_CATEGORIES
+    }
+
+    catalog_path = Path("data/kenh14_categories.json")
+    if catalog_path.exists():
+        try:
+            catalog = _load_kenh14_category_catalog(catalog_path)
+            LOGGER.info("Loaded Kenh14 category catalog from %s", catalog_path)
+        except ValueError as exc:
+            LOGGER.warning("Ignoring invalid Kenh14 category catalog at %s: %s", catalog_path, exc)
+
+    try:
+        categories = _select_kenh14_categories(config, catalog)
+    except ValueError as exc:
+        raise ValueError(f"Failed to select Kenh14 categories: {exc}") from exc
+
+    LOGGER.info(
+        "Initialized Kenh14CategoryLoader with categories: %s",
+        ", ".join(category.slug for category in categories),
+    )
+
+    return Kenh14CategoryLoader(
+        categories=categories,
+        existing_urls=existing_urls,
+        resume=config.resume,
+        user_agent=config.user_agent,
+        max_pages=config.kenh14.max_pages,
+        max_empty_pages=config.kenh14.max_empty_pages,
+        request_timeout=config.timeout.request_timeout,
+        proxy=config.proxy,
+    )
 
 
 _DEFAULT_THANHNIEN_CATEGORY_SLUGS: tuple[str, ...] = ("chinh-tri", "thoi-su-phap-luat")

@@ -5,6 +5,7 @@ import httpx
 
 from crawler.assets import AssetManager, AssetDownloadError
 from crawler.config import IngestConfig, ProxyConfig
+from crawler.parsers import AssetType, ParsedAsset
 
 
 class FakeResponse:
@@ -90,6 +91,56 @@ class AssetManagerProxyTestCase(unittest.TestCase):
                 self.assertEqual(kwargs.get("proxy"), config.proxy.httpx_proxy())
             finally:
                 manager.close()
+
+
+class AssetManagerDownloadWorkflowTestCase(unittest.TestCase):
+    def test_skips_blacklisted_lotus_quiz_assets(self) -> None:
+        asset = ParsedAsset(
+            source_url="https://challenge.lotus.vn/corona/quiz?_id=5e3bec8324d9b3",
+            asset_type=AssetType.IMAGE,
+            sequence=1,
+        )
+
+        with patch.object(AssetManager, "_stream_to_file") as stream_mock:
+            manager = AssetManager(IngestConfig(), client=FakeClient())
+            try:
+                stored = manager.download_assets("0199d134-ebf2-7f21-9994-b498b1d20456", [asset])
+            finally:
+                manager.close()
+
+        self.assertEqual(stored, [])
+        stream_mock.assert_not_called()
+
+    def test_normalizes_sohatv_embed_videos(self) -> None:
+        embed_url = (
+            "https://player.sohatv.vn/embed/100387?"
+            "vid=nguoiduatinvideo.mediacdn.vn/84299287675052032/2025/3/18/"
+            "lv020250318121708-17422764440581360405277.mp4"
+            "&poster=https://nguoiduatinvideo.mediacdn.vn/.v-thumb/84299287675052032/2025/3/18/"
+            "lv020250318121708-17422764440581360405277.mp4.jpg"
+        )
+        asset = ParsedAsset(source_url=embed_url, asset_type=AssetType.VIDEO, sequence=1)
+
+        with patch.object(AssetManager, "_stream_to_file", return_value=("checksum", 1024)) as stream_mock:
+            manager = AssetManager(IngestConfig(), client=FakeClient())
+            try:
+                stored = manager.download_assets("0199d131-942a-7a72-a0bb-55944b57ea1d", [asset])
+            finally:
+                manager.close()
+
+        stream_mock.assert_called_once()
+        normalized_url = stream_mock.call_args.args[0]
+        self.assertEqual(
+            normalized_url,
+            "https://nguoiduatinvideo.mediacdn.vn/84299287675052032/2025/3/18/"
+            "lv020250318121708-17422764440581360405277.mp4",
+        )
+        self.assertEqual(stored[0].path.name, "001.mp4")
+        self.assertEqual(stored[0].source.source_url, normalized_url)
+
+    def test_extension_falls_back_to_default_when_missing(self) -> None:
+        extension = AssetManager._extension_from_url("https://player.sohatv.vn/embed/100387", "mp4")
+        self.assertEqual(extension, "mp4")
 
 
 if __name__ == "__main__":

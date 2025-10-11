@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
@@ -23,6 +23,9 @@ class AssetDownloadError(RuntimeError):
 
 
 LOGGER = logging.getLogger(__name__)
+
+_SKIPPED_MEDIA_HOSTS = {"challenge.lotus.vn"}
+_EMBED_NORMALIZATION_MAX_PASSES = 3
 
 
 @dataclass(slots=True)
@@ -77,16 +80,22 @@ class AssetManager:
                 LOGGER.debug("Skipping inline data URI for article %s", article_id)
                 continue
 
-            if asset.source_url in seen_sources:
-                LOGGER.debug("Skipping duplicate asset URL %s for article %s", asset.source_url, article_id)
+            prepared_url = self._prepare_asset_url(asset)
+            if not prepared_url:
+                LOGGER.debug("Skipping unsupported asset URL %s for article %s", asset.source_url, article_id)
                 continue
 
-            resolved_url = asset.source_url
+            resolved_url = prepared_url
             if asset.asset_type == AssetType.VIDEO:
                 resolved_url = self._resolve_video_source(resolved_url)
-                asset.source_url = resolved_url
 
+            asset.source_url = resolved_url
+
+            if resolved_url in seen_sources:
+                LOGGER.debug("Skipping duplicate asset URL %s for article %s", resolved_url, article_id)
+                continue
             seen_sources.add(resolved_url)
+
             if asset.asset_type == AssetType.IMAGE:
                 target_dir = image_root
                 extension = self._extension_from_url(resolved_url, default="jpg")
@@ -152,6 +161,56 @@ class AssetManager:
 
         return url
 
+    def _prepare_asset_url(self, asset: ParsedAsset) -> str | None:
+        raw_url = (asset.source_url or "").strip()
+        if not raw_url:
+            return None
+
+        url = raw_url
+        for _ in range(_EMBED_NORMALIZATION_MAX_PASSES):
+            parsed = urlsplit(url)
+            scheme = parsed.scheme.lower()
+            if not scheme:
+                url = f"https://{url.lstrip('/')}"
+                continue
+            if scheme not in {"http", "https"}:
+                return None
+
+            hostname = (parsed.hostname or "").lower()
+            if hostname in _SKIPPED_MEDIA_HOSTS:
+                return None
+
+            if asset.asset_type == AssetType.VIDEO:
+                normalized = self._normalize_embed_url(parsed)
+                if normalized and normalized != url:
+                    url = normalized.strip()
+                    continue
+
+            break
+
+        parsed_final = urlsplit(url)
+        if parsed_final.scheme.lower() not in {"http", "https"}:
+            return None
+        if not parsed_final.hostname:
+            return None
+        return url
+
+    def _normalize_embed_url(self, parsed_url) -> str | None:
+        hostname = (parsed_url.hostname or "").lower()
+        if hostname.endswith("player.sohatv.vn") and parsed_url.path.startswith("/embed"):
+            query_params = parse_qs(parsed_url.query, keep_blank_values=True)
+            vid_candidates = query_params.get("vid") or []
+            for candidate in vid_candidates:
+                if not candidate:
+                    continue
+                cleaned = candidate.strip()
+                if not cleaned:
+                    continue
+                if not cleaned.startswith(("http://", "https://")):
+                    cleaned = f"https://{cleaned.lstrip('/')}"
+                return cleaned
+        return None
+
     def _download_hls(self, manifest_url: str, target: Path) -> tuple[str, int]:
         ffmpeg_path = shutil.which("ffmpeg")
         if not ffmpeg_path:
@@ -214,6 +273,7 @@ class AssetManager:
         try:
             with self._client.stream("GET", url) as response:
                 response.raise_for_status()
+                target.parent.mkdir(parents=True, exist_ok=True)
                 with target.open("wb") as handle:
                     for chunk in response.iter_bytes():
                         if not chunk:
@@ -233,9 +293,15 @@ class AssetManager:
 
     @staticmethod
     def _extension_from_url(url: str, default: str) -> str:
-        suffix = url.split("?")[0].split("#")[0].rsplit(".", 1)
-        if len(suffix) == 2 and suffix[1]:
-            return suffix[1].lower()
+        path = urlsplit(url).path
+        if not path:
+            return default
+
+        filename = path.rsplit("/", 1)[-1]
+        if "." in filename:
+            extension = filename.rsplit(".", 1)[1]
+            if extension:
+                return extension.lower()
         return default
 
     @staticmethod

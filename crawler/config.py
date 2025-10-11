@@ -147,6 +147,16 @@ class ZnewsCategoryConfig:
 
 
 @dataclass(slots=True)
+class Kenh14CategoryConfig:
+    """Category selection controls for Kenh14 ingestion."""
+
+    selected_slugs: tuple[str, ...] = ()
+    crawl_all: bool = False
+    max_pages: int | None = 600
+    max_empty_pages: int | None = 3
+
+
+@dataclass(slots=True)
 class IngestConfig:
     jobs_file: Path = DEFAULT_JOBS_FILE
     storage_root: Path = DEFAULT_STORAGE_ROOT
@@ -166,6 +176,7 @@ class IngestConfig:
     jobs_file_provided: bool = False
     thanhnien: ThanhnienCategoryConfig = field(default_factory=ThanhnienCategoryConfig)
     znews: ZnewsCategoryConfig = field(default_factory=ZnewsCategoryConfig)
+    kenh14: Kenh14CategoryConfig = field(default_factory=Kenh14CategoryConfig)
 
     def ensure_directories(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)

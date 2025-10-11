@@ -143,6 +143,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum consecutive Thanhnien timeline pages allowed without emitting new articles before stopping (0 or negative disables the guard; default is 2).",
     )
+    parser.add_argument(
+        "--kenh14-categories",
+        type=str,
+        default=None,
+        help="Comma-separated list of Kenh14 category slugs to ingest (defaults to curated subset when omitted).",
+    )
+    parser.add_argument(
+        "--kenh14-all-categories",
+        action="store_true",
+        help="Crawl all known Kenh14 categories (overrides curated defaults).",
+    )
+    parser.add_argument(
+        "--kenh14-max-pages",
+        type=int,
+        default=None,
+        help="Maximum number of timeline pages to fetch per Kenh14 category (0 or negative disables the limit; default is 600).",
+    )
+    parser.add_argument(
+        "--kenh14-max-empty-pages",
+        type=int,
+        default=None,
+        help="Maximum consecutive Kenh14 timeline pages without new URLs before stopping (0 or negative disables the guard; default is 3).",
+    )
     return parser
 
 
@@ -197,6 +220,10 @@ def _parse_thanhnien_categories(raw_value: str | None) -> tuple[str, ...]:
     return _parse_category_slugs(raw_value)
 
 
+def _parse_kenh14_categories(raw_value: str | None) -> tuple[str, ...]:
+    return _parse_category_slugs(raw_value)
+
+
 def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig:
     jobs_file = args.jobs_file or site.default_jobs_file
     config = IngestConfig(
@@ -240,6 +267,15 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
 
         use_categories_flag = bool(getattr(args, "znews_use_categories", False))
         config.znews.use_categories = bool(selected_slugs or config.znews.crawl_all or use_categories_flag)
+    elif site.slug == "kenh14":
+        config.kenh14.selected_slugs = _parse_kenh14_categories(getattr(args, "kenh14_categories", None))
+        config.kenh14.crawl_all = bool(getattr(args, "kenh14_all_categories", False))
+        config.kenh14.max_pages = _apply_sitemap_limit(
+            config.kenh14.max_pages, getattr(args, "kenh14_max_pages", None)
+        )
+        config.kenh14.max_empty_pages = _apply_sitemap_limit(
+            config.kenh14.max_empty_pages, getattr(args, "kenh14_max_empty_pages", None)
+        )
     return config
 
 
