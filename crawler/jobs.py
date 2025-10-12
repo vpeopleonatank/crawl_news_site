@@ -51,17 +51,14 @@ _KENH14_ARTICLE_PATTERN = re.compile(
     r"^https?://(?:[^./]+\.)?kenh14\.vn/[^?#]+-\d{6,}\.chn$",
     re.IGNORECASE,
 )
-<<<<<<< HEAD
 _NLD_BASE_URL = "https://nld.com.vn"
 _NLD_ARTICLE_PATTERN = re.compile(
     r"^https?://(?:[^./]+\.)?nld\.com\.vn/[^?#]+-\d{6,}\.htm$",
     re.IGNORECASE,
 )
-=======
 _PLO_BASE_URL = "https://plo.vn"
 _PLO_API_BASE = "https://api.plo.vn"
 _PLO_ARTICLE_PATTERN = re.compile(r"^https?://(?:[^./]+\.)?plo\.vn/[^?#]+-post\d+\.html$", re.IGNORECASE)
->>>>>>> feature/plo-crawler
 
 
 @dataclass(slots=True)
@@ -93,7 +90,6 @@ class Kenh14CategoryDefinition:
 
 
 @dataclass(slots=True)
-<<<<<<< HEAD
 class NldCategoryDefinition:
     slug: str
     name: str
@@ -302,7 +298,7 @@ class NldCategoryLoader:
 
         return urls
 
-=======
+@dataclass(slots=True)
 class PloCategoryDefinition:
     slug: str
     name: str
@@ -314,7 +310,6 @@ class PloCategoryDefinition:
 
     def api_url(self, page: int) -> str:
         return f"{_PLO_API_BASE}/api/morenews-zone-{self.zone_id}-{page}.html?phrase="
->>>>>>> feature/plo-crawler
 
 
 def _normalize_thanhnien_url(raw_url: str) -> str:
@@ -1515,7 +1510,6 @@ def build_kenh14_job_loader(config: IngestConfig, existing_urls: set[str]) -> Jo
     )
 
 
-<<<<<<< HEAD
 _DEFAULT_NLD_CATEGORY_SLUGS: tuple[str, ...] = ("phap-luat", "chinh-tri")
 _DEFAULT_NLD_CATEGORIES: tuple[NldCategoryDefinition, ...] = (
     NldCategoryDefinition(
@@ -1529,7 +1523,8 @@ _DEFAULT_NLD_CATEGORIES: tuple[NldCategoryDefinition, ...] = (
         name="Chính trị",
         category_id=1961206,
         landing_url="https://nld.com.vn/thoi-su/chinh-tri.htm",
-=======
+    ),
+)
 _DEFAULT_PLO_CATEGORY_SLUGS: tuple[str, ...] = ("phap-luat", "chinh-tri")
 _DEFAULT_PLO_CATEGORIES: tuple[PloCategoryDefinition, ...] = (
     PloCategoryDefinition(
@@ -1543,29 +1538,19 @@ _DEFAULT_PLO_CATEGORIES: tuple[PloCategoryDefinition, ...] = (
         name="Chính trị",
         zone_id=2,
         landing_url="https://plo.vn/thoi-su/chinh-tri/",
->>>>>>> feature/plo-crawler
     ),
 )
 
 
-<<<<<<< HEAD
 def _load_nld_category_catalog(catalog_path: Path) -> dict[str, NldCategoryDefinition]:
     try:
         raw_payload = catalog_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"Nld category catalog not found: {catalog_path}") from exc
-=======
-def _load_plo_category_catalog(catalog_path: Path) -> dict[str, PloCategoryDefinition]:
-    try:
-        raw_payload = catalog_path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"PLO category catalog not found: {catalog_path}") from exc
->>>>>>> feature/plo-crawler
 
     try:
         records = json.loads(raw_payload)
     except json.JSONDecodeError as exc:
-<<<<<<< HEAD
         raise ValueError(f"Invalid Nld category catalog: {exc}") from exc
 
     catalog: dict[str, NldCategoryDefinition] = {}
@@ -1573,20 +1558,10 @@ def _load_plo_category_catalog(catalog_path: Path) -> dict[str, PloCategoryDefin
         slug = entry.get("slug")
         name = entry.get("name") or ""
         category_id = entry.get("category_id")
-=======
-        raise ValueError(f"Invalid PLO category catalog: {exc}") from exc
-
-    catalog: dict[str, PloCategoryDefinition] = {}
-    for entry in records:
-        slug = entry.get("slug")
-        name = entry.get("name") or ""
-        zone_id = entry.get("zone_id")
->>>>>>> feature/plo-crawler
         landing_url = entry.get("landing_url") or ""
 
         if not isinstance(slug, str) or not slug:
             raise ValueError("Category catalog entries must include a non-empty 'slug'")
-<<<<<<< HEAD
         if not isinstance(category_id, int):
             try:
                 category_id = int(category_id)
@@ -1598,24 +1573,10 @@ def _load_plo_category_catalog(catalog_path: Path) -> dict[str, PloCategoryDefin
             name=name.strip() or slug,
             category_id=category_id,
             landing_url=_normalize_nld_url(landing_url),
-=======
-        if not isinstance(zone_id, int):
-            try:
-                zone_id = int(zone_id)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"Invalid zone_id for slug '{slug}': {entry.get('zone_id')}") from exc
-
-        definition = PloCategoryDefinition(
-            slug=slug.strip().lower(),
-            name=name.strip() or slug,
-            zone_id=zone_id,
-            landing_url=_normalize_plo_url(landing_url),
->>>>>>> feature/plo-crawler
         )
         catalog[definition.slug] = definition
 
     if not catalog:
-<<<<<<< HEAD
         raise ValueError("Nld category catalog is empty")
     return catalog
 
@@ -1633,52 +1594,24 @@ def _select_nld_categories(
     if not selected_slugs:
         raise ValueError(
             "No Nld categories selected. Provide --nld-categories or update the category catalog."
-=======
-        raise ValueError("PLO category catalog is empty")
-    return catalog
-
-
-def _select_plo_categories(config: IngestConfig, catalog: dict[str, PloCategoryDefinition]) -> list[PloCategoryDefinition]:
-    if config.plo.crawl_all:
-        selected_slugs = list(catalog.keys())
-    elif config.plo.selected_slugs:
-        selected_slugs = list(config.plo.selected_slugs)
-    else:
-        selected_slugs = [slug for slug in _DEFAULT_PLO_CATEGORY_SLUGS if slug in catalog]
-
-    if not selected_slugs:
-        raise ValueError(
-            "No PLO categories selected. Provide --plo-categories or update the PLO category catalog."
->>>>>>> feature/plo-crawler
         )
 
     missing = [slug for slug in selected_slugs if slug not in catalog]
     if missing:
-<<<<<<< HEAD
         raise ValueError(f"Unknown Nld categories requested: {', '.join(missing)}")
-=======
-        raise ValueError(f"Unknown PLO categories requested: {', '.join(missing)}")
->>>>>>> feature/plo-crawler
 
     return [catalog[slug] for slug in selected_slugs]
 
 
-<<<<<<< HEAD
 def build_nld_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
     if config.jobs_file_provided:
         LOGGER.info("Nld jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
-=======
-def build_plo_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
-    if config.jobs_file_provided:
-        LOGGER.info("PLO jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
->>>>>>> feature/plo-crawler
         return NDJSONJobLoader(
             jobs_file=config.jobs_file,
             existing_urls=existing_urls,
             resume=config.resume,
         )
 
-<<<<<<< HEAD
     catalog: dict[str, NldCategoryDefinition] = {category.slug: category for category in _DEFAULT_NLD_CATEGORIES}
 
     catalog_path = Path("data/nld_categories.json")
@@ -1700,7 +1633,87 @@ def build_plo_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLo
     )
 
     return NldCategoryLoader(
-=======
+        categories=categories,
+        existing_urls=existing_urls,
+        resume=config.resume,
+        user_agent=config.user_agent,
+        max_pages=config.nld.max_pages,
+        max_empty_pages=config.nld.max_empty_pages,
+        request_timeout=config.timeout.request_timeout,
+        proxy=config.proxy,
+    )
+
+
+def _load_plo_category_catalog(catalog_path: Path) -> dict[str, PloCategoryDefinition]:
+    try:
+        raw_payload = catalog_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"PLO category catalog not found: {catalog_path}") from exc
+
+    try:
+        records = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid PLO category catalog: {exc}") from exc
+
+    catalog: dict[str, PloCategoryDefinition] = {}
+    for entry in records:
+        slug = entry.get("slug")
+        name = entry.get("name") or ""
+        zone_id = entry.get("zone_id")
+        landing_url = entry.get("landing_url") or ""
+
+        if not isinstance(slug, str) or not slug:
+            raise ValueError("Category catalog entries must include a non-empty 'slug'")
+        if not isinstance(zone_id, int):
+            try:
+                zone_id = int(zone_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid zone_id for slug '{slug}': {entry.get('zone_id')}") from exc
+
+        definition = PloCategoryDefinition(
+            slug=slug.strip().lower(),
+            name=name.strip() or slug,
+            zone_id=zone_id,
+            landing_url=_normalize_plo_url(landing_url),
+        )
+        catalog[definition.slug] = definition
+
+    if not catalog:
+        raise ValueError("PLO category catalog is empty")
+    return catalog
+
+
+def _select_plo_categories(
+    config: IngestConfig, catalog: dict[str, PloCategoryDefinition]
+) -> list[PloCategoryDefinition]:
+    if config.plo.crawl_all:
+        selected_slugs = list(catalog.keys())
+    elif config.plo.selected_slugs:
+        selected_slugs = list(config.plo.selected_slugs)
+    else:
+        selected_slugs = [slug for slug in _DEFAULT_PLO_CATEGORY_SLUGS if slug in catalog]
+
+    if not selected_slugs:
+        raise ValueError(
+            "No PLO categories selected. Provide --plo-categories or update the PLO category catalog."
+        )
+
+    missing = [slug for slug in selected_slugs if slug not in catalog]
+    if missing:
+        raise ValueError(f"Unknown PLO categories requested: {', '.join(missing)}")
+
+    return [catalog[slug] for slug in selected_slugs]
+
+
+def build_plo_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
+    if config.jobs_file_provided:
+        LOGGER.info("PLO jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
+        return NDJSONJobLoader(
+            jobs_file=config.jobs_file,
+            existing_urls=existing_urls,
+            resume=config.resume,
+        )
+
     catalog: dict[str, PloCategoryDefinition] = {category.slug: category for category in _DEFAULT_PLO_CATEGORIES}
 
     catalog_path = Path("data/plo_categories.json")
@@ -1722,21 +1735,14 @@ def build_plo_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLo
     )
 
     return PloCategoryLoader(
->>>>>>> feature/plo-crawler
         categories=categories,
         existing_urls=existing_urls,
         resume=config.resume,
         user_agent=config.user_agent,
-<<<<<<< HEAD
-        max_pages=config.nld.max_pages,
-        max_empty_pages=config.nld.max_empty_pages,
-        request_timeout=config.timeout.request_timeout,
-=======
         max_pages=config.plo.max_pages,
         max_empty_pages=config.plo.max_empty_pages,
         request_timeout=config.timeout.request_timeout,
         include_landing_page=False,
->>>>>>> feature/plo-crawler
         proxy=config.proxy,
     )
 
