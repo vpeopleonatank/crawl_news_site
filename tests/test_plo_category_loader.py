@@ -106,6 +106,7 @@ class PloCategoryLoaderTestCase(unittest.TestCase):
             max_pages=3,
             max_empty_pages=2,
             request_timeout=1.0,
+            fetch_retry_backoff=0.0,
         )
 
         with patch("crawler.jobs.httpx.Client", return_value=FakeClient(self.responses)):
@@ -130,6 +131,7 @@ class PloCategoryLoaderTestCase(unittest.TestCase):
             max_pages=1,
             request_timeout=1.0,
             proxy=proxy,
+            fetch_retry_backoff=0.0,
         )
 
         with patch("crawler.jobs.httpx.Client") as client_cls:

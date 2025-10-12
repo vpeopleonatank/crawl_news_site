@@ -89,6 +89,7 @@ class ZnewsCategoryLoaderTestCase(unittest.TestCase):
             resume=True,
             max_pages=5,
             request_timeout=1.0,
+            fetch_retry_backoff=0.0,
         )
 
         with patch("crawler.jobs.httpx.Client", return_value=FakeClient(self.responses)):

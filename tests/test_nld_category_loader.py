@@ -78,6 +78,7 @@ class NldCategoryLoaderTestCase(unittest.TestCase):
             resume=True,
             max_pages=3,
             request_timeout=1.0,
+            fetch_retry_backoff=0.0,
         )
 
         with patch("crawler.jobs.httpx.Client", return_value=FakeClient(self.responses)):
@@ -101,6 +102,7 @@ class NldCategoryLoaderTestCase(unittest.TestCase):
             max_pages=1,
             request_timeout=1.0,
             proxy=proxy,
+            fetch_retry_backoff=0.0,
         )
 
         with patch("crawler.jobs.httpx.Client") as client_cls:

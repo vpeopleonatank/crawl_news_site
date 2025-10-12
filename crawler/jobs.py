@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,6 +121,8 @@ class NldCategoryLoader:
         duplicate_fingerprint_size: int = 5,
         stop_on_duplicate: bool = True,
         proxy: ProxyConfig | None = None,
+        max_fetch_attempts: int = 3,
+        fetch_retry_backoff: float = 1.0,
     ) -> None:
         self._categories = list(categories)
         self._existing_urls = existing_urls or set()
@@ -132,6 +135,8 @@ class NldCategoryLoader:
         self._duplicate_fingerprint_size = max(1, duplicate_fingerprint_size)
         self._stop_on_duplicate = stop_on_duplicate
         self._proxy = proxy
+        self._max_fetch_attempts = max(1, int(max_fetch_attempts))
+        self._fetch_retry_backoff = max(0.0, float(fetch_retry_backoff))
 
         self.stats = JobLoaderStats()
         self._seen_urls: set[str] = set()
@@ -218,18 +223,55 @@ class NldCategoryLoader:
         )
 
     def _fetch_html(self, client: httpx.Client, url: str) -> str:
-        try:
-            response = client.get(url)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            LOGGER.warning("Nld category request failed (%s): %s", url, exc)
-            return ""
-        except httpx.HTTPError as exc:
-            LOGGER.warning("Nld category request error (%s): %s", url, exc)
-            return ""
+        for attempt in range(self._max_fetch_attempts):
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+            except httpx.TimeoutException as exc:
+                LOGGER.warning(
+                    "Nld category request timeout (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPStatusError as exc:
+                LOGGER.warning("Nld category request failed (%s): %s", url, exc)
+                if (
+                    exc.response is not None
+                    and 500 <= exc.response.status_code < 600
+                    and self._should_retry(attempt)
+                ):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPError as exc:
+                LOGGER.warning(
+                    "Nld category request error (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            return response.text.strip()
+        return ""
 
-        text = response.text.strip()
-        return text
+    def _should_retry(self, attempt: int) -> bool:
+        return attempt + 1 < self._max_fetch_attempts
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self._fetch_retry_backoff <= 0:
+            return
+        delay = self._fetch_retry_backoff * (2 ** attempt)
+        time.sleep(delay)
 
     def _emit_jobs_from_html(self, html: str) -> Iterator[ArticleJob]:
         for url in self._extract_article_urls(html):
@@ -681,6 +723,8 @@ class ThanhnienCategoryLoader:
         request_timeout: float = 5.0,
         include_landing_page: bool = True,
         proxy: ProxyConfig | None = None,
+        max_fetch_attempts: int = 3,
+        fetch_retry_backoff: float = 1.0,
     ) -> None:
         self._categories = list(categories)
         self._existing_urls = existing_urls or set()
@@ -691,6 +735,8 @@ class ThanhnienCategoryLoader:
         self._request_timeout = request_timeout
         self._include_landing_page = include_landing_page
         self._proxy = proxy
+        self._max_fetch_attempts = max(1, int(max_fetch_attempts))
+        self._fetch_retry_backoff = max(0.0, float(fetch_retry_backoff))
 
         self.stats = JobLoaderStats()
         self._seen_urls: set[str] = set()
@@ -730,7 +776,11 @@ class ThanhnienCategoryLoader:
             timeline_url = category.timeline_url(page)
             html = self._fetch_html(client, timeline_url)
             if not html:
-                break
+                consecutive_empty_pages += 1
+                if self._max_empty_pages is not None and consecutive_empty_pages >= self._max_empty_pages:
+                    break
+                page += 1
+                continue
 
             emitted_on_page = False
             for job in self._emit_jobs_from_html(html):
@@ -755,16 +805,55 @@ class ThanhnienCategoryLoader:
         )
 
     def _fetch_html(self, client: httpx.Client, url: str) -> str:
-        try:
-            response = client.get(url)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            LOGGER.warning("Thanhnien category request failed (%s): %s", url, exc)
-            return ""
-        except httpx.HTTPError as exc:
-            LOGGER.warning("Thanhnien category request error (%s): %s", url, exc)
-            return ""
-        return response.text.strip()
+        for attempt in range(self._max_fetch_attempts):
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+            except httpx.TimeoutException as exc:
+                LOGGER.warning(
+                    "Thanhnien category request timeout (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPStatusError as exc:
+                LOGGER.warning("Thanhnien category request failed (%s): %s", url, exc)
+                if (
+                    exc.response is not None
+                    and 500 <= exc.response.status_code < 600
+                    and self._should_retry(attempt)
+                ):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPError as exc:
+                LOGGER.warning(
+                    "Thanhnien category request error (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            return response.text.strip()
+        return ""
+
+    def _should_retry(self, attempt: int) -> bool:
+        return attempt + 1 < self._max_fetch_attempts
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self._fetch_retry_backoff <= 0:
+            return
+        delay = self._fetch_retry_backoff * (2 ** attempt)
+        time.sleep(delay)
 
     def _emit_jobs_from_html(self, html: str) -> Iterator[ArticleJob]:
         for url in self._extract_article_urls(html):
@@ -819,6 +908,8 @@ class Kenh14CategoryLoader:
         request_timeout: float = 5.0,
         include_landing_page: bool = True,
         proxy: ProxyConfig | None = None,
+        max_fetch_attempts: int = 3,
+        fetch_retry_backoff: float = 1.0,
     ) -> None:
         self._categories = list(categories)
         self._existing_urls = existing_urls or set()
@@ -829,6 +920,8 @@ class Kenh14CategoryLoader:
         self._request_timeout = request_timeout
         self._include_landing_page = include_landing_page
         self._proxy = proxy
+        self._max_fetch_attempts = max(1, int(max_fetch_attempts))
+        self._fetch_retry_backoff = max(0.0, float(fetch_retry_backoff))
 
         self.stats = JobLoaderStats()
         self._seen_urls: set[str] = set()
@@ -897,29 +990,69 @@ class Kenh14CategoryLoader:
         )
 
     def _fetch_payload(self, client: httpx.Client, url: str) -> str:
-        try:
-            response = client.get(url)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            LOGGER.warning("Kenh14 category request failed (%s): %s", url, exc)
-            return ""
-        except httpx.HTTPError as exc:
-            LOGGER.warning("Kenh14 category request error (%s): %s", url, exc)
-            return ""
-
-        text = response.text.strip()
-        if not text:
-            return ""
-
-        if text.startswith("{") or text.startswith("["):
+        for attempt in range(self._max_fetch_attempts):
             try:
-                payload = response.json()
-            except ValueError:
-                return text
-            html_fragment = self._extract_html_from_payload(payload)
-            if html_fragment:
-                return html_fragment
-        return text
+                response = client.get(url)
+                response.raise_for_status()
+            except httpx.TimeoutException as exc:
+                LOGGER.warning(
+                    "Kenh14 category request timeout (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPStatusError as exc:
+                LOGGER.warning("Kenh14 category request failed (%s): %s", url, exc)
+                if (
+                    exc.response is not None
+                    and 500 <= exc.response.status_code < 600
+                    and self._should_retry(attempt)
+                ):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPError as exc:
+                LOGGER.warning(
+                    "Kenh14 category request error (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+
+            text = response.text.strip()
+            if not text:
+                return ""
+
+            if text.startswith("{") or text.startswith("["):
+                try:
+                    payload = response.json()
+                except ValueError:
+                    return text
+                html_fragment = self._extract_html_from_payload(payload)
+                if html_fragment:
+                    return html_fragment
+                return ""
+            return text
+        return ""
+
+    def _should_retry(self, attempt: int) -> bool:
+        return attempt + 1 < self._max_fetch_attempts
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self._fetch_retry_backoff <= 0:
+            return
+        delay = self._fetch_retry_backoff * (2 ** attempt)
+        time.sleep(delay)
 
     def _extract_html_from_payload(self, payload: object) -> str:
         fragments: list[str] = []
@@ -1009,6 +1142,8 @@ class PloCategoryLoader:
         request_timeout: float = 5.0,
         include_landing_page: bool = False,
         proxy: ProxyConfig | None = None,
+        max_fetch_attempts: int = 3,
+        fetch_retry_backoff: float = 1.0,
     ) -> None:
         self._categories = list(categories)
         self._existing_urls = existing_urls or set()
@@ -1019,6 +1154,8 @@ class PloCategoryLoader:
         self._request_timeout = request_timeout
         self._include_landing_page = include_landing_page
         self._proxy = proxy
+        self._max_fetch_attempts = max(1, int(max_fetch_attempts))
+        self._fetch_retry_backoff = max(0.0, float(fetch_retry_backoff))
 
         self.stats = JobLoaderStats()
         self._seen_urls: set[str] = set()
@@ -1086,46 +1223,111 @@ class PloCategoryLoader:
         )
 
     def _fetch_landing_html(self, client: httpx.Client, url: str) -> str:
-        try:
-            response = client.get(url)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            LOGGER.warning("PLO landing request failed (%s): %s", url, exc)
-            return ""
-        except httpx.HTTPError as exc:
-            LOGGER.warning("PLO landing request error (%s): %s", url, exc)
-            return ""
-        return response.text.strip()
+        for attempt in range(self._max_fetch_attempts):
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+            except httpx.TimeoutException as exc:
+                LOGGER.warning(
+                    "PLO landing request timeout (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPStatusError as exc:
+                LOGGER.warning("PLO landing request failed (%s): %s", url, exc)
+                if (
+                    exc.response is not None
+                    and 500 <= exc.response.status_code < 600
+                    and self._should_retry(attempt)
+                ):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPError as exc:
+                LOGGER.warning(
+                    "PLO landing request error (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            return response.text.strip()
+        return ""
 
     def _fetch_api_contents(self, client: httpx.Client, url: str) -> list[dict] | None:
-        try:
-            response = client.get(url)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            LOGGER.warning("PLO API request failed (%s): %s", url, exc)
-            return None
-        except httpx.HTTPError as exc:
-            LOGGER.warning("PLO API request error (%s): %s", url, exc)
-            return None
+        for attempt in range(self._max_fetch_attempts):
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+            except httpx.TimeoutException as exc:
+                LOGGER.warning(
+                    "PLO API request timeout (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return None
+            except httpx.HTTPStatusError as exc:
+                LOGGER.warning("PLO API request failed (%s): %s", url, exc)
+                if (
+                    exc.response is not None
+                    and 500 <= exc.response.status_code < 600
+                    and self._should_retry(attempt)
+                ):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return None
+            except httpx.HTTPError as exc:
+                LOGGER.warning(
+                    "PLO API request error (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return None
+            try:
+                payload = response.json()
+            except json.JSONDecodeError as exc:
+                LOGGER.warning("Invalid PLO API payload (%s): %s", url, exc)
+                return None
+            data_section = payload.get("data")
+            if not isinstance(data_section, dict):
+                LOGGER.warning("Unexpected PLO API structure (%s): missing data section", url)
+                return []
+            contents = data_section.get("contents")
+            if contents is None:
+                return []
+            if not isinstance(contents, list):
+                LOGGER.warning("Unexpected PLO API contents format (%s)", url)
+                return []
+            return contents
+        return None
+    def _should_retry(self, attempt: int) -> bool:
+        return attempt + 1 < self._max_fetch_attempts
 
-        try:
-            payload = response.json()
-        except json.JSONDecodeError as exc:
-            LOGGER.warning("Invalid PLO API payload (%s): %s", url, exc)
-            return None
-
-        data_section = payload.get("data")
-        if not isinstance(data_section, dict):
-            LOGGER.warning("Unexpected PLO API structure (%s): missing data section", url)
-            return []
-
-        contents = data_section.get("contents")
-        if contents is None:
-            return []
-        if not isinstance(contents, list):
-            LOGGER.warning("Unexpected PLO API contents format (%s)", url)
-            return []
-        return contents
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self._fetch_retry_backoff <= 0:
+            return
+        delay = self._fetch_retry_backoff * (2 ** attempt)
+        time.sleep(delay)
 
     def _emit_jobs_from_html(self, html: str) -> Iterator[ArticleJob]:
         soup = BeautifulSoup(html, "html.parser")
@@ -1260,6 +1462,8 @@ class ZnewsCategoryLoader:
         duplicate_fingerprint_size: int = 3,
         stop_on_duplicate: bool = True,
         proxy: ProxyConfig | None = None,
+        max_fetch_attempts: int = 3,
+        fetch_retry_backoff: float = 1.0,
     ) -> None:
         self._categories = list(categories)
         self._existing_urls = existing_urls or set()
@@ -1270,6 +1474,8 @@ class ZnewsCategoryLoader:
         self._duplicate_fingerprint_size = max(1, duplicate_fingerprint_size)
         self._stop_on_duplicate = stop_on_duplicate
         self._proxy = proxy
+        self._max_fetch_attempts = max(1, int(max_fetch_attempts))
+        self._fetch_retry_backoff = max(0.0, float(fetch_retry_backoff))
 
         self.stats = JobLoaderStats()
         self._seen_urls: set[str] = set()
@@ -1346,16 +1552,55 @@ class ZnewsCategoryLoader:
         )
 
     def _fetch_html(self, client: httpx.Client, url: str) -> str:
-        try:
-            response = client.get(url)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            LOGGER.warning("Znews category request failed (%s): %s", url, exc)
-            return ""
-        except httpx.HTTPError as exc:
-            LOGGER.warning("Znews category request error (%s): %s", url, exc)
-            return ""
-        return response.text.strip()
+        for attempt in range(self._max_fetch_attempts):
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+            except httpx.TimeoutException as exc:
+                LOGGER.warning(
+                    "Znews category request timeout (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPStatusError as exc:
+                LOGGER.warning("Znews category request failed (%s): %s", url, exc)
+                if (
+                    exc.response is not None
+                    and 500 <= exc.response.status_code < 600
+                    and self._should_retry(attempt)
+                ):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPError as exc:
+                LOGGER.warning(
+                    "Znews category request error (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            return response.text.strip()
+        return ""
+
+    def _should_retry(self, attempt: int) -> bool:
+        return attempt + 1 < self._max_fetch_attempts
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self._fetch_retry_backoff <= 0:
+            return
+        delay = self._fetch_retry_backoff * (2 ** attempt)
+        time.sleep(delay)
 
     def _emit_jobs_from_urls(self, urls: Sequence[str]) -> Iterator[ArticleJob]:
         for url in urls:
