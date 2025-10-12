@@ -27,6 +27,17 @@ def _db_backend_from_db(db_url: Optional[str]) -> Optional[str]:
     return db_url if db_url.startswith("db+") else f"db+{db_url}"
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return max(0, parsed)
+
+
 def create_celery_app() -> Celery:
     """Instantiate the Celery app with environment driven configuration."""
 
@@ -44,18 +55,30 @@ def create_celery_app() -> Celery:
     if backend_url is None:
         backend_url = "cache+memory://"
 
+    engine_options = {
+        # Keep connection usage conservative by default; tweak via env if needed.
+        "pool_size": _env_int("CRAWLER_DB_POOL_SIZE", 2),
+        "max_overflow": _env_int("CRAWLER_DB_MAX_OVERFLOW", 0),
+        "pool_recycle": _env_int("CRAWLER_DB_POOL_RECYCLE", 1800),
+        "pool_pre_ping": True,
+    }
+
     app = Celery("crawler", broker=broker_url, backend=backend_url, include=["crawler.tasks"])
-    app.conf.update(
-        task_serializer="json",
-        accept_content=["json"],
-        result_serializer="json",
-        task_always_eager=_env_bool("CRAWLER_CELERY_TASK_ALWAYS_EAGER", True),
-        task_acks_late=True,
-        task_reject_on_worker_lost=True,
-        worker_prefetch_multiplier=1,
-        result_persistent=True,
-        broker_connection_retry_on_startup=True,
-    )
+    conf_updates = {
+        "task_serializer": "json",
+        "accept_content": ["json"],
+        "result_serializer": "json",
+        "task_always_eager": _env_bool("CRAWLER_CELERY_TASK_ALWAYS_EAGER", True),
+        "task_acks_late": True,
+        "task_reject_on_worker_lost": True,
+        "worker_prefetch_multiplier": 1,
+        "result_persistent": True,
+        "broker_connection_retry_on_startup": True,
+    }
+    if backend_url.startswith("db+"):
+        conf_updates["database_engine_options"] = engine_options
+        conf_updates["database_short_lived_sessions"] = True
+    app.conf.update(**conf_updates)
     return app
 
 

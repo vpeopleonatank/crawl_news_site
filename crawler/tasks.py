@@ -27,6 +27,15 @@ from .sites import get_site_definition
 
 LOGGER = logging.getLogger(__name__)
 
+_ENGINE_OPTIONS = {
+    # Keep the Celery worker's connection footprint small to avoid exhausting
+    # Postgres when many workers are running.
+    "pool_size": 2,
+    "max_overflow": 0,
+    "pool_pre_ping": True,
+    "pool_recycle": 1800,
+}
+
 
 def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
     storage_root = Path(config_payload["storage_root"])
@@ -65,7 +74,7 @@ def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
 
 @lru_cache(maxsize=8)
 def _session_factory(db_url: str):
-    engine = create_engine(db_url)
+    engine = create_engine(db_url, **_ENGINE_OPTIONS)
     return sessionmaker(bind=engine)
 
 
