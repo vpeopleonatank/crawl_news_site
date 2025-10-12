@@ -242,6 +242,9 @@ class AssetManager:
             if header_lines:
                 header_value = "\r\n".join(header_lines) + "\r\n"
 
+        asset_timeout = float(getattr(self._config.timeout, "asset_timeout", 0.0) or 0.0)
+        hls_timeout = float(getattr(self._config.timeout, "hls_download_timeout", 0.0) or 0.0)
+
         command = [
             ffmpeg_path,
             "-hide_banner",
@@ -251,6 +254,9 @@ class AssetManager:
         ]
         if header_value:
             command.extend(["-headers", header_value])
+        if asset_timeout > 0:
+            rw_timeout_us = int(asset_timeout * 1_000_000)
+            command.extend(["-rw_timeout", str(rw_timeout_us)])
         command.extend(
             [
                 "-i",
@@ -266,7 +272,16 @@ class AssetManager:
         )
 
         try:
-            subprocess.run(command, check=True, capture_output=True)
+            run_kwargs: dict[str, object] = {"check": True, "capture_output": True}
+            if hls_timeout > 0:
+                run_kwargs["timeout"] = hls_timeout
+            subprocess.run(command, **run_kwargs)
+        except subprocess.TimeoutExpired as exc:
+            if temporary_target.exists():
+                temporary_target.unlink(missing_ok=True)
+            raise AssetDownloadError(
+                f"ffmpeg timed out after {hls_timeout:.0f}s while processing {manifest_url}"
+            ) from exc
         except subprocess.CalledProcessError as exc:
             if temporary_target.exists():
                 temporary_target.unlink(missing_ok=True)

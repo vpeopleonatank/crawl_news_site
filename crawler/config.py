@@ -31,6 +31,7 @@ class RetryConfig:
 class TimeoutConfig:
     request_timeout: float = 5.0
     asset_timeout: float = 30.0
+    hls_download_timeout: float = 900.0
 
 
 @dataclass(slots=True)

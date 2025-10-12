@@ -16,7 +16,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from .assets import assets_to_payload
-from .config import IngestConfig, ProxyConfig
+from .config import IngestConfig, ProxyConfig, TimeoutConfig
 from .http_client import HttpFetchError, HttpFetcher
 from .jobs import ArticleJob, NDJSONJobLoader, load_existing_urls
 from .parsers import AssetType, ParsedAsset, ParsingError
@@ -85,6 +85,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="Seconds to wait for Playwright video manifest responses",
+    )
+    parser.add_argument(
+        "--hls-download-timeout",
+        type=float,
+        default=TimeoutConfig().hls_download_timeout,
+        help="Maximum seconds to allow ffmpeg when downloading HLS video streams (default: 900).",
     )
     parser.add_argument(
         "--sitemap-max-documents",
@@ -296,6 +302,9 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
     config.ensure_directories()
     config.playwright_enabled = getattr(args, "use_playwright", False)
     config.playwright_timeout = getattr(args, "playwright_timeout", config.playwright_timeout)
+    hls_timeout = getattr(args, "hls_download_timeout", config.timeout.hls_download_timeout)
+    if hls_timeout and hls_timeout > 0:
+        config.timeout.hls_download_timeout = float(hls_timeout)
     config.sitemap_max_documents = _apply_sitemap_limit(
         config.sitemap_max_documents, getattr(args, "sitemap_max_documents", None)
     )
@@ -408,6 +417,7 @@ def _build_task_payload(
             "user_agent": config.user_agent,
             "request_timeout": config.timeout.request_timeout,
             "asset_timeout": config.timeout.asset_timeout,
+            "hls_download_timeout": config.timeout.hls_download_timeout,
         },
     }
 
@@ -513,11 +523,38 @@ def _enqueue_asset_downloads(
         assets,
         include_playwright=use_celery_playwright,
     )
+
+    soft_limit: int | None = None
+    hard_limit: int | None = None
+    hls_timeout = getattr(config.timeout, "hls_download_timeout", 0)
+    if hls_timeout and hls_timeout > 0:
+        try:
+            base_timeout = int(float(hls_timeout))
+        except (TypeError, ValueError):
+            base_timeout = 0
+        if base_timeout > 0:
+            soft_limit = base_timeout + 60
+            hard_limit = soft_limit + 60
+
+    signature_kwargs: dict[str, int] = {}
+    if soft_limit:
+        signature_kwargs["soft_time_limit"] = soft_limit
+    if hard_limit:
+        signature_kwargs["time_limit"] = hard_limit
+
     if use_celery_playwright:
-        pipeline = resolve_video_assets_task.s(task_payload) | download_assets_task.s()
+        download_sig = download_assets_task.s()
+        if signature_kwargs:
+            download_sig = download_sig.set(**signature_kwargs)
+        pipeline = resolve_video_assets_task.s(task_payload) | download_sig
         pipeline.delay()
     else:
-        download_assets_task.delay(task_payload)
+        apply_kwargs: dict[str, int] = {}
+        if soft_limit:
+            apply_kwargs["soft_time_limit"] = soft_limit
+        if hard_limit:
+            apply_kwargs["time_limit"] = hard_limit
+        download_assets_task.apply_async((task_payload,), **apply_kwargs)
     LOGGER.info("Queued %d assets for article %s", len(assets), article_id)
 
 

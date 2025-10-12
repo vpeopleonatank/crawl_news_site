@@ -39,9 +39,13 @@ _ENGINE_OPTIONS = {
 
 def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
     storage_root = Path(config_payload["storage_root"])
+    default_timeout = TimeoutConfig()
     timeout = TimeoutConfig(
-        request_timeout=float(config_payload.get("request_timeout", TimeoutConfig().request_timeout)),
-        asset_timeout=float(config_payload.get("asset_timeout", TimeoutConfig().asset_timeout)),
+        request_timeout=float(config_payload.get("request_timeout", default_timeout.request_timeout)),
+        asset_timeout=float(config_payload.get("asset_timeout", default_timeout.asset_timeout)),
+        hls_download_timeout=float(
+            config_payload.get("hls_download_timeout", default_timeout.hls_download_timeout)
+        ),
     )
 
     config = IngestConfig(
