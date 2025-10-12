@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import httpx
 
@@ -131,6 +131,9 @@ class AssetManager:
 
     def _build_request_headers(self, asset: ParsedAsset) -> dict[str, str]:
         headers: dict[str, str] = {}
+        user_agent = (self._config.user_agent or "").strip()
+        if user_agent:
+            headers["User-Agent"] = user_agent
         referrer = (asset.referrer or "").strip()
         if referrer:
             headers["Referer"] = referrer
@@ -144,7 +147,8 @@ class AssetManager:
             return url
 
         parsed = urlsplit(url)
-        if "thanhnien.mediacdn.vn" not in parsed.netloc:
+        hostname = (parsed.netloc or "").lower()
+        if not hostname.endswith("mediacdn.vn"):
             return url
 
         if not parsed.path.endswith(".mp4"):
@@ -164,11 +168,10 @@ class AssetManager:
             LOGGER.debug("Manifest %s returned non-JSON payload", manifest_url)
             return url
 
-        if isinstance(payload, dict):
-            hls_url = payload.get("hls") or payload.get("mhls")
-            if hls_url:
-                LOGGER.debug("Resolved Thanhnien HLS %s from manifest %s", hls_url, manifest_url)
-                return hls_url
+        hls_url = self._extract_hls_url(payload)
+        if hls_url:
+            LOGGER.debug("Resolved mediacdn HLS %s from manifest %s", hls_url, manifest_url)
+            return hls_url
 
         return url
 
@@ -241,6 +244,9 @@ class AssetManager:
             header_lines = [f"{key}: {value}" for key, value in headers.items() if key and value]
             if header_lines:
                 header_value = "\r\n".join(header_lines) + "\r\n"
+        user_agent = (self._config.user_agent or "").strip()
+
+        manifest_url = self._maybe_select_hls_variant(manifest_url, headers)
 
         asset_timeout = float(getattr(self._config.timeout, "asset_timeout", 0.0) or 0.0)
         hls_timeout = float(getattr(self._config.timeout, "hls_download_timeout", 0.0) or 0.0)
@@ -252,6 +258,8 @@ class AssetManager:
             "error",
             "-y",
         ]
+        if user_agent:
+            command.extend(["-user_agent", user_agent])
         if header_value:
             command.extend(["-headers", header_value])
         if asset_timeout > 0:
@@ -307,8 +315,102 @@ class AssetManager:
             raise AssetDownloadError(
                 f"Failed to finalize HLS download for {manifest_url}: {exc}"
             ) from exc
-
         return self._hash_file(target)
+
+    def _maybe_select_hls_variant(
+        self,
+        manifest_url: str,
+        headers: Mapping[str, str] | None = None,
+    ) -> str:
+        """Return a variant playlist URL when manifest_url is a master manifest."""
+
+        timeout_value = self._config.timeout.asset_timeout or None
+        try:
+            response = self._client.get(
+                manifest_url,
+                headers=headers or None,
+                timeout=timeout_value,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:  # pragma: no cover - network failure path
+            LOGGER.debug("Failed to prefetch HLS manifest %s: %s", manifest_url, exc)
+            return manifest_url
+
+        playlist = response.text
+        variant_url = self._select_hls_variant(manifest_url, playlist)
+        if variant_url:
+            LOGGER.debug("Selected HLS variant %s from master %s", variant_url, manifest_url)
+            return variant_url
+        return manifest_url
+
+    @staticmethod
+    def _select_hls_variant(manifest_url: str, playlist: str) -> str | None:
+        """Choose the highest-bandwidth variant from an HLS master playlist."""
+
+        best_url: str | None = None
+        best_bandwidth = -1
+        pending_bandwidth = -1
+
+        for line in (line.strip() for line in playlist.splitlines()):
+            if not line:
+                continue
+            if line.startswith("#EXT-X-STREAM-INF"):
+                pending_bandwidth = -1
+                attributes = line.split(":", 1)
+                if len(attributes) != 2:
+                    continue
+                for attr in attributes[1].split(","):
+                    key, _, value = attr.strip().partition("=")
+                    if key.upper() == "BANDWIDTH":
+                        try:
+                            pending_bandwidth = int(value.strip())
+                        except ValueError:
+                            pending_bandwidth = -1
+                        break
+                continue
+
+            if line.startswith("#"):
+                continue
+
+            if pending_bandwidth < 0:
+                continue
+
+            candidate_url = urljoin(manifest_url, line)
+            if pending_bandwidth > best_bandwidth:
+                best_bandwidth = pending_bandwidth
+                best_url = candidate_url
+            pending_bandwidth = -1
+
+        return best_url
+
+    @staticmethod
+    def _extract_hls_url(payload: object) -> str | None:
+        """Search for an HLS URL within a manifest payload."""
+
+        def _scan(value: object) -> str | None:
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if ".m3u8" in cleaned:
+                    return cleaned
+                return None
+            if isinstance(value, Mapping):
+                for preferred in ("hls", "mhls"):
+                    candidate = value.get(preferred)
+                    result = _scan(candidate)
+                    if result:
+                        return result
+                for nested in value.values():
+                    result = _scan(nested)
+                    if result:
+                        return result
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+                for item in value:
+                    result = _scan(item)
+                    if result:
+                        return result
+            return None
+
+        return _scan(payload)
 
     def _stream_to_file(
         self,

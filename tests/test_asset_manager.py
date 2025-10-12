@@ -26,7 +26,7 @@ class FakeClient:
         self.response_map = response_map or {}
         self.requested_urls = []
 
-    def get(self, url, timeout=None):
+    def get(self, url, timeout=None, headers=None):
         self.requested_urls.append(url)
         if url not in self.response_map:
             raise httpx.HTTPError("not found")
@@ -147,7 +147,8 @@ class AssetManagerDownloadWorkflowTestCase(unittest.TestCase):
         )
 
         with patch.object(AssetManager, "_stream_to_file", return_value=("checksum", 2048)) as stream_mock:
-            manager = AssetManager(IngestConfig(), client=FakeClient())
+            config = IngestConfig()
+            manager = AssetManager(config, client=FakeClient())
             try:
                 manager.download_assets("0199d5f6-9903-75b0-a394-9f7f15a2e807", [asset])
             finally:
@@ -157,6 +158,55 @@ class AssetManagerDownloadWorkflowTestCase(unittest.TestCase):
         headers = stream_mock.call_args.kwargs.get("headers") or {}
         self.assertEqual(headers.get("Referer"), asset.referrer)
         self.assertEqual(headers.get("Origin"), "https://plo.vn")
+        self.assertEqual(headers.get("User-Agent"), config.user_agent)
+
+    def test_includes_user_agent_header_without_referrer(self) -> None:
+        asset = ParsedAsset(
+            source_url="https://cdn.example.com/image.jpg",
+            asset_type=AssetType.IMAGE,
+            sequence=1,
+        )
+
+        with patch.object(AssetManager, "_stream_to_file", return_value=("checksum", 1024)) as stream_mock:
+            config = IngestConfig()
+            manager = AssetManager(config, client=FakeClient())
+            try:
+                manager.download_assets("0199d5f6-9903-75b0-a394-9f7f15a2e807", [asset])
+            finally:
+                manager.close()
+
+        stream_mock.assert_called_once()
+        headers = stream_mock.call_args.kwargs.get("headers") or {}
+        self.assertEqual(headers.get("User-Agent"), config.user_agent)
+        self.assertNotIn("Referer", headers)
+
+    def test_select_hls_variant_picks_highest_bandwidth(self) -> None:
+        manifest = """#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+high.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+low.m3u8
+"""
+        selected = AssetManager._select_hls_variant("https://cdn.example.com/master.m3u8", manifest)
+        self.assertEqual(selected, "https://cdn.example.com/high.m3u8")
+
+    def test_select_hls_variant_handles_relative_paths(self) -> None:
+        manifest = """#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1000000
+renditions/720.m3u8
+"""
+        selected = AssetManager._select_hls_variant("https://cdn.example.com/videos/master.m3u8", manifest)
+        self.assertEqual(selected, "https://cdn.example.com/videos/renditions/720.m3u8")
+
+    def test_extract_hls_url_from_nested_manifest(self) -> None:
+        payload = {
+            "streams": [
+                {"type": "dash", "url": "https://cdn.example.com/video.mpd"},
+                {"type": "hls", "links": {"primary": "https://cdn.example.com/video.m3u8"}},
+            ]
+        }
+        extracted = AssetManager._extract_hls_url(payload)
+        self.assertEqual(extracted, "https://cdn.example.com/video.m3u8")
 
     def test_extension_falls_back_to_default_when_missing(self) -> None:
         extension = AssetManager._extension_from_url("https://player.sohatv.vn/embed/100387", "mp4")
