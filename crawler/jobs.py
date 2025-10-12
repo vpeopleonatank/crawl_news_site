@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Protocol, Sequence
 from urllib.parse import urljoin
@@ -50,11 +51,17 @@ _KENH14_ARTICLE_PATTERN = re.compile(
     r"^https?://(?:[^./]+\.)?kenh14\.vn/[^?#]+-\d{6,}\.chn$",
     re.IGNORECASE,
 )
+<<<<<<< HEAD
 _NLD_BASE_URL = "https://nld.com.vn"
 _NLD_ARTICLE_PATTERN = re.compile(
     r"^https?://(?:[^./]+\.)?nld\.com\.vn/[^?#]+-\d{6,}\.htm$",
     re.IGNORECASE,
 )
+=======
+_PLO_BASE_URL = "https://plo.vn"
+_PLO_API_BASE = "https://api.plo.vn"
+_PLO_ARTICLE_PATTERN = re.compile(r"^https?://(?:[^./]+\.)?plo\.vn/[^?#]+-post\d+\.html$", re.IGNORECASE)
+>>>>>>> feature/plo-crawler
 
 
 @dataclass(slots=True)
@@ -86,6 +93,7 @@ class Kenh14CategoryDefinition:
 
 
 @dataclass(slots=True)
+<<<<<<< HEAD
 class NldCategoryDefinition:
     slug: str
     name: str
@@ -294,6 +302,19 @@ class NldCategoryLoader:
 
         return urls
 
+=======
+class PloCategoryDefinition:
+    slug: str
+    name: str
+    zone_id: int
+    landing_url: str
+
+    def normalized_landing_url(self) -> str:
+        return _normalize_plo_url(self.landing_url)
+
+    def api_url(self, page: int) -> str:
+        return f"{_PLO_API_BASE}/api/morenews-zone-{self.zone_id}-{page}.html?phrase="
+>>>>>>> feature/plo-crawler
 
 
 def _normalize_thanhnien_url(raw_url: str) -> str:
@@ -325,6 +346,43 @@ def _normalize_article_href(raw_href: str | None) -> str | None:
     elif not cleaned.startswith("http"):
         cleaned = urljoin(f"{_THANHNIEN_BASE_URL}/", cleaned)
     if not _THANHNIEN_ARTICLE_PATTERN.match(cleaned):
+        return None
+    return cleaned
+
+
+def _normalize_plo_url(raw_url: str) -> str:
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return _PLO_BASE_URL
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_PLO_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_PLO_BASE_URL}/", cleaned)
+    return cleaned
+
+
+def _normalize_plo_article_href(raw_href: str | None) -> str | None:
+    if not raw_href:
+        return None
+
+    cleaned = raw_href.strip()
+    if not cleaned or cleaned.lower().startswith(("javascript:", "mailto:")):
+        return None
+
+    cleaned = cleaned.split("#", 1)[0].split("?", 1)[0]
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_PLO_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_PLO_BASE_URL}/", cleaned)
+
+    if not _PLO_ARTICLE_PATTERN.match(cleaned):
         return None
     return cleaned
 
@@ -941,6 +999,195 @@ class Kenh14CategoryLoader:
         return urls
 
 
+class PloCategoryLoader:
+    """Iterate PLO category API endpoints and emit article URLs."""
+
+    def __init__(
+        self,
+        categories: Sequence[PloCategoryDefinition],
+        *,
+        existing_urls: set[str] | None = None,
+        resume: bool = False,
+        user_agent: str | None = None,
+        max_pages: int | None = None,
+        max_empty_pages: int | None = 2,
+        request_timeout: float = 5.0,
+        include_landing_page: bool = False,
+        proxy: ProxyConfig | None = None,
+    ) -> None:
+        self._categories = list(categories)
+        self._existing_urls = existing_urls or set()
+        self._resume = resume
+        self._user_agent = user_agent
+        self._max_pages = max_pages
+        self._max_empty_pages = max_empty_pages
+        self._request_timeout = request_timeout
+        self._include_landing_page = include_landing_page
+        self._proxy = proxy
+
+        self.stats = JobLoaderStats()
+        self._seen_urls: set[str] = set()
+
+    def __iter__(self) -> Iterator[ArticleJob]:
+        self.stats = JobLoaderStats()
+        self._seen_urls.clear()
+
+        headers = {"User-Agent": self._user_agent} if self._user_agent else None
+        proxy_url = self._proxy.httpx_proxy() if self._proxy else None
+        client_kwargs: dict[str, object] = {
+            "headers": headers,
+            "timeout": self._request_timeout,
+        }
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+
+        with httpx.Client(**client_kwargs) as client:
+            for category in self._categories:
+                yield from self._iterate_category(client, category)
+
+    def _iterate_category(self, client: httpx.Client, category: PloCategoryDefinition) -> Iterator[ArticleJob]:
+        emitted_before = self.stats.emitted
+        skipped_existing_before = self.stats.skipped_existing
+        skipped_duplicate_before = self.stats.skipped_duplicate
+        skipped_invalid_before = self.stats.skipped_invalid
+
+        if self._include_landing_page:
+            landing_html = self._fetch_landing_html(client, category.normalized_landing_url())
+            if landing_html:
+                yield from self._emit_jobs_from_html(landing_html)
+
+        page = 1
+        consecutive_empty_pages = 0
+        while True:
+            if self._max_pages is not None and page > self._max_pages:
+                break
+
+            api_url = category.api_url(page)
+            contents = self._fetch_api_contents(client, api_url)
+            if contents is None:
+                break
+
+            emitted_on_page = False
+            for job in self._emit_jobs_from_contents(contents):
+                emitted_on_page = True
+                yield job
+
+            if not emitted_on_page:
+                consecutive_empty_pages += 1
+                if self._max_empty_pages is not None and consecutive_empty_pages >= self._max_empty_pages:
+                    break
+            else:
+                consecutive_empty_pages = 0
+
+            page += 1
+
+        LOGGER.info(
+            "PLO category '%s': emitted=%d skipped_existing=%d skipped_duplicate=%d skipped_invalid=%d",
+            category.slug,
+            self.stats.emitted - emitted_before,
+            self.stats.skipped_existing - skipped_existing_before,
+            self.stats.skipped_duplicate - skipped_duplicate_before,
+            self.stats.skipped_invalid - skipped_invalid_before,
+        )
+
+    def _fetch_landing_html(self, client: httpx.Client, url: str) -> str:
+        try:
+            response = client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            LOGGER.warning("PLO landing request failed (%s): %s", url, exc)
+            return ""
+        except httpx.HTTPError as exc:
+            LOGGER.warning("PLO landing request error (%s): %s", url, exc)
+            return ""
+        return response.text.strip()
+
+    def _fetch_api_contents(self, client: httpx.Client, url: str) -> list[dict] | None:
+        try:
+            response = client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            LOGGER.warning("PLO API request failed (%s): %s", url, exc)
+            return None
+        except httpx.HTTPError as exc:
+            LOGGER.warning("PLO API request error (%s): %s", url, exc)
+            return None
+
+        try:
+            payload = response.json()
+        except json.JSONDecodeError as exc:
+            LOGGER.warning("Invalid PLO API payload (%s): %s", url, exc)
+            return None
+
+        data_section = payload.get("data")
+        if not isinstance(data_section, dict):
+            LOGGER.warning("Unexpected PLO API structure (%s): missing data section", url)
+            return []
+
+        contents = data_section.get("contents")
+        if contents is None:
+            return []
+        if not isinstance(contents, list):
+            LOGGER.warning("Unexpected PLO API contents format (%s)", url)
+            return []
+        return contents
+
+    def _emit_jobs_from_html(self, html: str) -> Iterator[ArticleJob]:
+        soup = BeautifulSoup(html, "html.parser")
+        for anchor in soup.find_all("a"):
+            normalized = _normalize_plo_article_href(anchor.get("href"))
+            if not normalized:
+                continue
+            job = self._maybe_emit_job(normalized, None, None)
+            if job:
+                yield job
+
+    def _emit_jobs_from_contents(self, contents: list[dict]) -> Iterator[ArticleJob]:
+        for entry in contents:
+            self.stats.total += 1
+
+            if not isinstance(entry, dict):
+                self.stats.skipped_invalid += 1
+                continue
+
+            raw_url = entry.get("url") or entry.get("redirect_link")
+            normalized = _normalize_plo_article_href(raw_url)
+            if not normalized:
+                self.stats.skipped_invalid += 1
+                continue
+
+            lastmod = self._format_timestamp(entry.get("update_time") or entry.get("date"))
+            avatar = entry.get("avatar_url")
+
+            job = self._maybe_emit_job(normalized, lastmod, avatar)
+            if job:
+                yield job
+
+    def _maybe_emit_job(self, url: str, lastmod: str | None, image_url: str | None) -> ArticleJob | None:
+        if url in self._seen_urls:
+            self.stats.skipped_duplicate += 1
+            return None
+        self._seen_urls.add(url)
+
+        if self._resume and url in self._existing_urls:
+            self.stats.skipped_existing += 1
+            return None
+
+        job = ArticleJob(url=url, lastmod=lastmod, sitemap_url=None, image_url=image_url)
+        self.stats.emitted += 1
+        return job
+
+    def _format_timestamp(self, value: object) -> str | None:
+        if value is None:
+            return None
+        try:
+            epoch = int(value)
+        except (TypeError, ValueError):
+            return None
+        dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        return dt.isoformat()
+
+
 _ZNEWS_BASE_URL = "https://znews.vn"
 _ZNEWS_ARTICLE_PATTERN = re.compile(r"^https?://(?:[^./]+\.)?znews\.vn/[^?#]+-(?:post|news|video)\d+\.html$", re.IGNORECASE)
 
@@ -1268,6 +1515,7 @@ def build_kenh14_job_loader(config: IngestConfig, existing_urls: set[str]) -> Jo
     )
 
 
+<<<<<<< HEAD
 _DEFAULT_NLD_CATEGORY_SLUGS: tuple[str, ...] = ("phap-luat", "chinh-tri")
 _DEFAULT_NLD_CATEGORIES: tuple[NldCategoryDefinition, ...] = (
     NldCategoryDefinition(
@@ -1281,19 +1529,43 @@ _DEFAULT_NLD_CATEGORIES: tuple[NldCategoryDefinition, ...] = (
         name="Chính trị",
         category_id=1961206,
         landing_url="https://nld.com.vn/thoi-su/chinh-tri.htm",
+=======
+_DEFAULT_PLO_CATEGORY_SLUGS: tuple[str, ...] = ("phap-luat", "chinh-tri")
+_DEFAULT_PLO_CATEGORIES: tuple[PloCategoryDefinition, ...] = (
+    PloCategoryDefinition(
+        slug="phap-luat",
+        name="Pháp luật",
+        zone_id=114,
+        landing_url="https://plo.vn/phap-luat/",
+    ),
+    PloCategoryDefinition(
+        slug="chinh-tri",
+        name="Chính trị",
+        zone_id=2,
+        landing_url="https://plo.vn/thoi-su/chinh-tri/",
+>>>>>>> feature/plo-crawler
     ),
 )
 
 
+<<<<<<< HEAD
 def _load_nld_category_catalog(catalog_path: Path) -> dict[str, NldCategoryDefinition]:
     try:
         raw_payload = catalog_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"Nld category catalog not found: {catalog_path}") from exc
+=======
+def _load_plo_category_catalog(catalog_path: Path) -> dict[str, PloCategoryDefinition]:
+    try:
+        raw_payload = catalog_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"PLO category catalog not found: {catalog_path}") from exc
+>>>>>>> feature/plo-crawler
 
     try:
         records = json.loads(raw_payload)
     except json.JSONDecodeError as exc:
+<<<<<<< HEAD
         raise ValueError(f"Invalid Nld category catalog: {exc}") from exc
 
     catalog: dict[str, NldCategoryDefinition] = {}
@@ -1301,10 +1573,20 @@ def _load_nld_category_catalog(catalog_path: Path) -> dict[str, NldCategoryDefin
         slug = entry.get("slug")
         name = entry.get("name") or ""
         category_id = entry.get("category_id")
+=======
+        raise ValueError(f"Invalid PLO category catalog: {exc}") from exc
+
+    catalog: dict[str, PloCategoryDefinition] = {}
+    for entry in records:
+        slug = entry.get("slug")
+        name = entry.get("name") or ""
+        zone_id = entry.get("zone_id")
+>>>>>>> feature/plo-crawler
         landing_url = entry.get("landing_url") or ""
 
         if not isinstance(slug, str) or not slug:
             raise ValueError("Category catalog entries must include a non-empty 'slug'")
+<<<<<<< HEAD
         if not isinstance(category_id, int):
             try:
                 category_id = int(category_id)
@@ -1316,10 +1598,24 @@ def _load_nld_category_catalog(catalog_path: Path) -> dict[str, NldCategoryDefin
             name=name.strip() or slug,
             category_id=category_id,
             landing_url=_normalize_nld_url(landing_url),
+=======
+        if not isinstance(zone_id, int):
+            try:
+                zone_id = int(zone_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid zone_id for slug '{slug}': {entry.get('zone_id')}") from exc
+
+        definition = PloCategoryDefinition(
+            slug=slug.strip().lower(),
+            name=name.strip() or slug,
+            zone_id=zone_id,
+            landing_url=_normalize_plo_url(landing_url),
+>>>>>>> feature/plo-crawler
         )
         catalog[definition.slug] = definition
 
     if not catalog:
+<<<<<<< HEAD
         raise ValueError("Nld category catalog is empty")
     return catalog
 
@@ -1337,24 +1633,52 @@ def _select_nld_categories(
     if not selected_slugs:
         raise ValueError(
             "No Nld categories selected. Provide --nld-categories or update the category catalog."
+=======
+        raise ValueError("PLO category catalog is empty")
+    return catalog
+
+
+def _select_plo_categories(config: IngestConfig, catalog: dict[str, PloCategoryDefinition]) -> list[PloCategoryDefinition]:
+    if config.plo.crawl_all:
+        selected_slugs = list(catalog.keys())
+    elif config.plo.selected_slugs:
+        selected_slugs = list(config.plo.selected_slugs)
+    else:
+        selected_slugs = [slug for slug in _DEFAULT_PLO_CATEGORY_SLUGS if slug in catalog]
+
+    if not selected_slugs:
+        raise ValueError(
+            "No PLO categories selected. Provide --plo-categories or update the PLO category catalog."
+>>>>>>> feature/plo-crawler
         )
 
     missing = [slug for slug in selected_slugs if slug not in catalog]
     if missing:
+<<<<<<< HEAD
         raise ValueError(f"Unknown Nld categories requested: {', '.join(missing)}")
+=======
+        raise ValueError(f"Unknown PLO categories requested: {', '.join(missing)}")
+>>>>>>> feature/plo-crawler
 
     return [catalog[slug] for slug in selected_slugs]
 
 
+<<<<<<< HEAD
 def build_nld_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
     if config.jobs_file_provided:
         LOGGER.info("Nld jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
+=======
+def build_plo_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
+    if config.jobs_file_provided:
+        LOGGER.info("PLO jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
+>>>>>>> feature/plo-crawler
         return NDJSONJobLoader(
             jobs_file=config.jobs_file,
             existing_urls=existing_urls,
             resume=config.resume,
         )
 
+<<<<<<< HEAD
     catalog: dict[str, NldCategoryDefinition] = {category.slug: category for category in _DEFAULT_NLD_CATEGORIES}
 
     catalog_path = Path("data/nld_categories.json")
@@ -1376,13 +1700,43 @@ def build_nld_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLo
     )
 
     return NldCategoryLoader(
+=======
+    catalog: dict[str, PloCategoryDefinition] = {category.slug: category for category in _DEFAULT_PLO_CATEGORIES}
+
+    catalog_path = Path("data/plo_categories.json")
+    if catalog_path.exists():
+        try:
+            catalog = _load_plo_category_catalog(catalog_path)
+            LOGGER.info("Loaded PLO category catalog from %s", catalog_path)
+        except ValueError as exc:
+            LOGGER.warning("Ignoring invalid PLO category catalog at %s: %s", catalog_path, exc)
+
+    try:
+        categories = _select_plo_categories(config, catalog)
+    except ValueError as exc:
+        raise ValueError(f"Failed to select PLO categories: {exc}") from exc
+
+    LOGGER.info(
+        "Initialized PloCategoryLoader with categories: %s",
+        ", ".join(category.slug for category in categories),
+    )
+
+    return PloCategoryLoader(
+>>>>>>> feature/plo-crawler
         categories=categories,
         existing_urls=existing_urls,
         resume=config.resume,
         user_agent=config.user_agent,
+<<<<<<< HEAD
         max_pages=config.nld.max_pages,
         max_empty_pages=config.nld.max_empty_pages,
         request_timeout=config.timeout.request_timeout,
+=======
+        max_pages=config.plo.max_pages,
+        max_empty_pages=config.plo.max_empty_pages,
+        request_timeout=config.timeout.request_timeout,
+        include_landing_page=False,
+>>>>>>> feature/plo-crawler
         proxy=config.proxy,
     )
 
