@@ -255,6 +255,7 @@ class BuildTaskPayloadTestCase(unittest.TestCase):
         )
 
         self.assertEqual(payload["site"], site.slug)
+        self.assertEqual(payload["assets"][0]["referrer"], "https://example.com/article")
 
 
 if __name__ == "__main__":

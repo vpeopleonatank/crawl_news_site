@@ -138,6 +138,26 @@ class AssetManagerDownloadWorkflowTestCase(unittest.TestCase):
         self.assertEqual(stored[0].path.name, "001.mp4")
         self.assertEqual(stored[0].source.source_url, normalized_url)
 
+    def test_applies_referrer_header_when_available(self) -> None:
+        asset = ParsedAsset(
+            source_url="https://streaming-cms-plo.epicdn.me/video.mp4",
+            asset_type=AssetType.VIDEO,
+            sequence=1,
+            referrer="https://plo.vn/some-article",
+        )
+
+        with patch.object(AssetManager, "_stream_to_file", return_value=("checksum", 2048)) as stream_mock:
+            manager = AssetManager(IngestConfig(), client=FakeClient())
+            try:
+                manager.download_assets("0199d5f6-9903-75b0-a394-9f7f15a2e807", [asset])
+            finally:
+                manager.close()
+
+        stream_mock.assert_called_once()
+        headers = stream_mock.call_args.kwargs.get("headers") or {}
+        self.assertEqual(headers.get("Referer"), asset.referrer)
+        self.assertEqual(headers.get("Origin"), "https://plo.vn")
+
     def test_extension_falls_back_to_default_when_missing(self) -> None:
         extension = AssetManager._extension_from_url("https://player.sohatv.vn/embed/100387", "mp4")
         self.assertEqual(extension, "mp4")

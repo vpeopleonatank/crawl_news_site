@@ -166,6 +166,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum consecutive Kenh14 timeline pages without new URLs before stopping (0 or negative disables the guard; default is 3).",
     )
+    parser.add_argument(
+        "--plo-categories",
+        type=str,
+        default=None,
+        help="Comma-separated list of PLO category slugs to ingest (defaults to curated subset when omitted).",
+    )
+    parser.add_argument(
+        "--plo-all-categories",
+        action="store_true",
+        help="Crawl all known PLO categories (overrides curated defaults).",
+    )
+    parser.add_argument(
+        "--plo-max-pages",
+        type=int,
+        default=None,
+        help="Maximum number of API pages to fetch per PLO category (0 or negative disables the limit; default is 200).",
+    )
+    parser.add_argument(
+        "--plo-max-empty-pages",
+        type=int,
+        default=None,
+        help="Maximum consecutive PLO API pages without new URLs before stopping (0 or negative disables the guard; default is 3).",
+    )
     return parser
 
 
@@ -286,6 +309,13 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
         config.kenh14.max_empty_pages = _apply_sitemap_limit(
             config.kenh14.max_empty_pages, getattr(args, "kenh14_max_empty_pages", None)
         )
+    elif site.slug == "plo":
+        config.plo.selected_slugs = _parse_category_slugs(getattr(args, "plo_categories", None))
+        config.plo.crawl_all = bool(getattr(args, "plo_all_categories", False))
+        config.plo.max_pages = _apply_sitemap_limit(config.plo.max_pages, getattr(args, "plo_max_pages", None))
+        config.plo.max_empty_pages = _apply_sitemap_limit(
+            config.plo.max_empty_pages, getattr(args, "plo_max_empty_pages", None)
+        )
     return config
 
 
@@ -331,6 +361,10 @@ def _build_task_payload(
     *,
     include_playwright: bool,
 ) -> dict:
+    for asset in assets:
+        if not asset.referrer:
+            asset.referrer = article_url
+
     payload = {
         "article_id": article_id,
         "db_url": config.db_url,
@@ -450,6 +484,9 @@ def _process_job(
         try:
             html, response = fetcher.fetch_html(job.url)
             parsed = parser_impl.parse(job.url, html)
+            for asset in parsed.assets:
+                if not asset.referrer:
+                    asset.referrer = job.url
             fetch_metadata = {
                 "status_code": response.status_code,
                 "sitemap_url": job.sitemap_url,

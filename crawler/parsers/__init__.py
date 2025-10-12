@@ -19,6 +19,7 @@ class ParsedAsset:
     asset_type: AssetType
     sequence: int
     caption: str | None = None
+    referrer: str | None = None
 
 
 @dataclass(slots=True)

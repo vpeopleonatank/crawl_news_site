@@ -90,6 +90,7 @@ class AssetManager:
                 resolved_url = self._resolve_video_source(resolved_url)
 
             asset.source_url = resolved_url
+            headers = self._build_request_headers(asset)
 
             if resolved_url in seen_sources:
                 LOGGER.debug("Skipping duplicate asset URL %s for article %s", resolved_url, article_id)
@@ -101,18 +102,18 @@ class AssetManager:
                 extension = self._extension_from_url(resolved_url, default="jpg")
                 filename = f"{asset.sequence:03d}.{extension}"
                 target_path = target_dir / filename
-                checksum, bytes_written = self._stream_to_file(resolved_url, target_path)
+                checksum, bytes_written = self._stream_to_file(resolved_url, target_path, headers=headers)
             else:
                 target_dir = video_root
                 if self._is_hls_manifest(resolved_url):
                     filename = f"{asset.sequence:03d}.mp4"
                     target_path = target_dir / filename
-                    checksum, bytes_written = self._download_hls(resolved_url, target_path)
+                    checksum, bytes_written = self._download_hls(resolved_url, target_path, headers=headers)
                 else:
                     extension = self._extension_from_url(resolved_url, default="mp4")
                     filename = f"{asset.sequence:03d}.{extension}"
                     target_path = target_dir / filename
-                    checksum, bytes_written = self._stream_to_file(resolved_url, target_path)
+                    checksum, bytes_written = self._stream_to_file(resolved_url, target_path, headers=headers)
             stored.append(
                 StoredAsset(
                     source=asset,
@@ -127,6 +128,16 @@ class AssetManager:
     def _is_hls_manifest(url: str) -> bool:
         path = urlsplit(url).path
         return path.endswith(".m3u8")
+
+    def _build_request_headers(self, asset: ParsedAsset) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        referrer = (asset.referrer or "").strip()
+        if referrer:
+            headers["Referer"] = referrer
+            parsed = urlsplit(referrer)
+            if parsed.scheme and parsed.netloc:
+                headers.setdefault("Origin", f"{parsed.scheme}://{parsed.netloc}")
+        return headers
 
     def _resolve_video_source(self, url: str) -> str:
         if self._is_hls_manifest(url):
@@ -211,7 +222,12 @@ class AssetManager:
                 return cleaned
         return None
 
-    def _download_hls(self, manifest_url: str, target: Path) -> tuple[str, int]:
+    def _download_hls(
+        self,
+        manifest_url: str,
+        target: Path,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[str, int]:
         ffmpeg_path = shutil.which("ffmpeg")
         if not ffmpeg_path:
             raise AssetDownloadError("ffmpeg is required to download HLS streams")
@@ -220,22 +236,34 @@ class AssetManager:
             f"{target.stem}-{uuid.uuid4().hex}{target.suffix}.tmp"
         )
         LOGGER.debug("Downloading HLS stream %s to %s", manifest_url, target)
+        header_value = None
+        if headers:
+            header_lines = [f"{key}: {value}" for key, value in headers.items() if key and value]
+            if header_lines:
+                header_value = "\r\n".join(header_lines) + "\r\n"
+
         command = [
             ffmpeg_path,
             "-hide_banner",
             "-loglevel",
             "error",
             "-y",
-            "-i",
-            manifest_url,
-            "-c",
-            "copy",
-            "-bsf:a",
-            "aac_adtstoasc",
-            "-f",
-            "mp4",
-            str(temporary_target),
         ]
+        if header_value:
+            command.extend(["-headers", header_value])
+        command.extend(
+            [
+                "-i",
+                manifest_url,
+                "-c",
+                "copy",
+                "-bsf:a",
+                "aac_adtstoasc",
+                "-f",
+                "mp4",
+                str(temporary_target),
+            ]
+        )
 
         try:
             subprocess.run(command, check=True, capture_output=True)
@@ -267,11 +295,17 @@ class AssetManager:
 
         return self._hash_file(target)
 
-    def _stream_to_file(self, url: str, target: Path) -> tuple[str, int]:
+    def _stream_to_file(
+        self,
+        url: str,
+        target: Path,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[str, int]:
         hasher = hashlib.sha256()
         bytes_written = 0
         try:
-            with self._client.stream("GET", url) as response:
+            request_headers = headers if headers else None
+            with self._client.stream("GET", url, headers=request_headers) as response:
                 response.raise_for_status()
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with target.open("wb") as handle:
@@ -329,6 +363,7 @@ def asset_to_payload(asset: ParsedAsset) -> dict[str, str | int | None]:
         "asset_type": asset.asset_type.value,
         "sequence": asset.sequence,
         "caption": asset.caption,
+        "referrer": asset.referrer,
     }
 
 
@@ -336,6 +371,16 @@ def assets_to_payload(assets: Sequence[ParsedAsset]) -> list[dict[str, str | int
     """Serialize a sequence of parsed assets."""
 
     return [asset_to_payload(asset) for asset in ensure_asset_sequence(assets)]
+
+
+def _normalize_referrer(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def asset_from_payload(payload: Mapping[str, object]) -> ParsedAsset:
@@ -346,6 +391,7 @@ def asset_from_payload(payload: Mapping[str, object]) -> ParsedAsset:
         asset_type=AssetType(payload["asset_type"]),
         sequence=int(payload["sequence"]),
         caption=payload.get("caption") or None,
+        referrer=_normalize_referrer(payload.get("referrer")),
     )
 
 
