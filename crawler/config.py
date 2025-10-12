@@ -157,6 +157,16 @@ class Kenh14CategoryConfig:
 
 
 @dataclass(slots=True)
+class PloCategoryConfig:
+    """Category selection controls for PLO ingestion."""
+
+    selected_slugs: tuple[str, ...] = ()
+    crawl_all: bool = False
+    max_pages: int | None = 200
+    max_empty_pages: int | None = 3
+
+
+@dataclass(slots=True)
 class IngestConfig:
     jobs_file: Path = DEFAULT_JOBS_FILE
     storage_root: Path = DEFAULT_STORAGE_ROOT
@@ -177,6 +187,7 @@ class IngestConfig:
     thanhnien: ThanhnienCategoryConfig = field(default_factory=ThanhnienCategoryConfig)
     znews: ZnewsCategoryConfig = field(default_factory=ZnewsCategoryConfig)
     kenh14: Kenh14CategoryConfig = field(default_factory=Kenh14CategoryConfig)
+    plo: PloCategoryConfig = field(default_factory=PloCategoryConfig)
 
     def ensure_directories(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)
