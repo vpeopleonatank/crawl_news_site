@@ -144,6 +144,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Maximum consecutive Thanhnien timeline pages allowed without emitting new articles before stopping (0 or negative disables the guard; default is 2).",
     )
     parser.add_argument(
+        "--nld-categories",
+        type=str,
+        default=None,
+        help="Comma-separated list of Nld category slugs to ingest (defaults to curated subset when omitted).",
+    )
+    parser.add_argument(
+        "--nld-all-categories",
+        action="store_true",
+        help="Crawl all known Nld categories (overrides curated defaults).",
+    )
+    parser.add_argument(
+        "--nld-max-pages",
+        type=int,
+        default=None,
+        help="Maximum number of timeline pages to fetch per Nld category (0 or negative disables the limit; default is unlimited).",
+    )
+    parser.add_argument(
+        "--nld-max-empty-pages",
+        type=int,
+        default=None,
+        help="Maximum consecutive Nld timeline pages without new URLs before stopping (0 or negative disables the guard; default is 1).",
+    )
+    parser.add_argument(
         "--kenh14-categories",
         type=str,
         default=None,
@@ -277,6 +300,15 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
 
         use_categories_flag = bool(getattr(args, "znews_use_categories", False))
         config.znews.use_categories = bool(selected_slugs or config.znews.crawl_all or use_categories_flag)
+    elif site.slug == "nld":
+        config.nld.selected_slugs = _parse_category_slugs(getattr(args, "nld_categories", None))
+        config.nld.crawl_all = bool(getattr(args, "nld_all_categories", False))
+        config.nld.max_pages = _apply_sitemap_limit(
+            config.nld.max_pages, getattr(args, "nld_max_pages", None)
+        )
+        config.nld.max_empty_pages = _apply_sitemap_limit(
+            config.nld.max_empty_pages, getattr(args, "nld_max_empty_pages", None)
+        )
     elif site.slug == "kenh14":
         config.kenh14.selected_slugs = _parse_kenh14_categories(getattr(args, "kenh14_categories", None))
         config.kenh14.crawl_all = bool(getattr(args, "kenh14_all_categories", False))
@@ -366,10 +398,6 @@ def _build_task_payload(
 
 
 def _update_video_assets_with_playwright(resolver, article_url: str, assets: list[ParsedAsset]) -> None:
-    video_assets = [asset for asset in assets if asset.asset_type == AssetType.VIDEO]
-    if not video_assets:
-        return
-
     try:
         streams = resolver.resolve_streams(article_url)
     except PlaywrightVideoResolverError as exc:
@@ -379,12 +407,53 @@ def _update_video_assets_with_playwright(resolver, article_url: str, assets: lis
     if not streams:
         return
 
-    for asset, stream in zip(video_assets, streams):
+    video_assets = [asset for asset in assets if asset.asset_type == AssetType.VIDEO]
+    existing_sequences = {asset.sequence for asset in assets}
+    existing_urls = {asset.source_url for asset in video_assets}
+
+    def _select_stream_url(stream: dict) -> str | None:
         if not isinstance(stream, dict):
+            return None
+        return (
+            stream.get("hls")
+            or stream.get("mhls")
+            or stream.get("url")
+            or stream.get("mp4")
+        )
+
+    for asset, stream in zip(video_assets, streams):
+        url = _select_stream_url(stream)
+        if not url:
             continue
-        hls_url = stream.get("hls") or stream.get("mhls")
-        if hls_url and hls_url != asset.source_url:
-            asset.source_url = hls_url
+        if url != asset.source_url:
+            asset.source_url = url
+        existing_urls.add(url)
+
+    remaining_streams = []
+    if len(streams) > len(video_assets):
+        remaining_streams = streams[len(video_assets) :]
+
+    if not video_assets and streams:
+        remaining_streams = streams
+
+    if not remaining_streams:
+        return
+
+    next_sequence = max(existing_sequences, default=0) + 1
+    for stream in remaining_streams:
+        url = _select_stream_url(stream)
+        if not url or url in existing_urls:
+            continue
+        assets.append(
+            ParsedAsset(
+                source_url=url,
+                asset_type=AssetType.VIDEO,
+                sequence=next_sequence,
+            )
+        )
+        existing_urls.add(url)
+        existing_sequences.add(next_sequence)
+        next_sequence += 1
 
 
 def _enqueue_asset_downloads(

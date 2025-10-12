@@ -50,6 +50,11 @@ _KENH14_ARTICLE_PATTERN = re.compile(
     r"^https?://(?:[^./]+\.)?kenh14\.vn/[^?#]+-\d{6,}\.chn$",
     re.IGNORECASE,
 )
+_NLD_BASE_URL = "https://nld.com.vn"
+_NLD_ARTICLE_PATTERN = re.compile(
+    r"^https?://(?:[^./]+\.)?nld\.com\.vn/[^?#]+-\d{6,}\.htm$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -78,6 +83,217 @@ class Kenh14CategoryDefinition:
 
     def timeline_url(self, page: int) -> str:
         return f"{_KENH14_BASE_URL}/timeline/laytinmoitronglist-{self.timeline_id}/page-{page}.chn"
+
+
+@dataclass(slots=True)
+class NldCategoryDefinition:
+    slug: str
+    name: str
+    category_id: int
+    landing_url: str
+
+    def normalized_landing_url(self) -> str:
+        return _normalize_nld_url(self.landing_url)
+
+    def timeline_url(self, page: int) -> str:
+        return f"{_NLD_BASE_URL}/timelinelist/{self.category_id}/{page}.htm"
+
+
+class NldCategoryLoader:
+    """Iterate Nld category landing pages and timeline endpoints."""
+
+    def __init__(
+        self,
+        categories: Sequence[NldCategoryDefinition],
+        *,
+        existing_urls: set[str] | None = None,
+        resume: bool = False,
+        user_agent: str | None = None,
+        max_pages: int | None = None,
+        max_empty_pages: int | None = 1,
+        request_timeout: float = 5.0,
+        include_landing_page: bool = True,
+        duplicate_fingerprint_size: int = 5,
+        stop_on_duplicate: bool = True,
+        proxy: ProxyConfig | None = None,
+    ) -> None:
+        self._categories = list(categories)
+        self._existing_urls = existing_urls or set()
+        self._resume = resume
+        self._user_agent = user_agent
+        self._max_pages = max_pages
+        self._max_empty_pages = max_empty_pages
+        self._request_timeout = request_timeout
+        self._include_landing_page = include_landing_page
+        self._duplicate_fingerprint_size = max(1, duplicate_fingerprint_size)
+        self._stop_on_duplicate = stop_on_duplicate
+        self._proxy = proxy
+
+        self.stats = JobLoaderStats()
+        self._seen_urls: set[str] = set()
+
+    def __iter__(self) -> Iterator[ArticleJob]:
+        self.stats = JobLoaderStats()
+        self._seen_urls.clear()
+
+        headers = {"User-Agent": self._user_agent} if self._user_agent else None
+        proxy_url = self._proxy.httpx_proxy() if self._proxy else None
+        client_kwargs: dict[str, object] = {
+            "headers": headers,
+            "timeout": self._request_timeout,
+        }
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        with httpx.Client(**client_kwargs) as client:
+            for category in self._categories:
+                yield from self._iterate_category(client, category)
+
+    def _iterate_category(self, client: httpx.Client, category: NldCategoryDefinition) -> Iterator[ArticleJob]:
+        emitted_before = self.stats.emitted
+        skipped_existing_before = self.stats.skipped_existing
+        skipped_duplicate_before = self.stats.skipped_duplicate
+
+        if self._include_landing_page:
+            landing_html = self._fetch_html(client, category.normalized_landing_url())
+            if landing_html:
+                yield from self._emit_jobs_from_html(landing_html)
+
+        page = 1
+        consecutive_empty_pages = 0
+        previous_fingerprint: list[str] | None = None
+
+        while True:
+            if self._max_pages is not None and page > self._max_pages:
+                break
+
+            timeline_url = category.timeline_url(page)
+            html = self._fetch_html(client, timeline_url)
+            if not html:
+                consecutive_empty_pages += 1
+                if self._max_empty_pages is not None and consecutive_empty_pages >= self._max_empty_pages:
+                    break
+                page += 1
+                continue
+
+            urls = self._extract_article_urls(html)
+            if not urls:
+                consecutive_empty_pages += 1
+                if self._max_empty_pages is not None and consecutive_empty_pages >= self._max_empty_pages:
+                    break
+                page += 1
+                continue
+
+            consecutive_empty_pages = 0
+            fingerprint = urls[: self._duplicate_fingerprint_size]
+            if (
+                self._stop_on_duplicate
+                and previous_fingerprint is not None
+                and fingerprint
+                and fingerprint == previous_fingerprint
+            ):
+                LOGGER.info(
+                    "Nld category '%s': detected duplicate pagination at %s; stopping.",
+                    category.slug,
+                    timeline_url,
+                )
+                break
+            if fingerprint:
+                previous_fingerprint = fingerprint
+
+            for job in self._emit_jobs_from_urls(urls):
+                yield job
+
+            page += 1
+
+        LOGGER.info(
+            "Nld category '%s': emitted=%d skipped_existing=%d skipped_duplicate=%d",
+            category.slug,
+            self.stats.emitted - emitted_before,
+            self.stats.skipped_existing - skipped_existing_before,
+            self.stats.skipped_duplicate - skipped_duplicate_before,
+        )
+
+    def _fetch_html(self, client: httpx.Client, url: str) -> str:
+        try:
+            response = client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            LOGGER.warning("Nld category request failed (%s): %s", url, exc)
+            return ""
+        except httpx.HTTPError as exc:
+            LOGGER.warning("Nld category request error (%s): %s", url, exc)
+            return ""
+
+        text = response.text.strip()
+        return text
+
+    def _emit_jobs_from_html(self, html: str) -> Iterator[ArticleJob]:
+        for url in self._extract_article_urls(html):
+            self.stats.total += 1
+
+            if url in self._seen_urls:
+                self.stats.skipped_duplicate += 1
+                continue
+            self._seen_urls.add(url)
+
+            if self._resume and url in self._existing_urls:
+                self.stats.skipped_existing += 1
+                continue
+
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None)
+            self.stats.emitted += 1
+            yield job
+
+    def _emit_jobs_from_urls(self, urls: Sequence[str]) -> Iterator[ArticleJob]:
+        for url in urls:
+            self.stats.total += 1
+
+            if url in self._seen_urls:
+                self.stats.skipped_duplicate += 1
+                continue
+            self._seen_urls.add(url)
+
+            if self._resume and url in self._existing_urls:
+                self.stats.skipped_existing += 1
+                continue
+
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None)
+            self.stats.emitted += 1
+            yield job
+
+    def _extract_article_urls(self, html: str) -> list[str]:
+        soup = BeautifulSoup(html, "html.parser")
+        urls: list[str] = []
+        seen_local: set[str] = set()
+
+        candidate_attributes = (
+            "data-io-canonical-url",
+            "data-link",
+            "data-url",
+            "data-href",
+            "data-src",
+            "href",
+        )
+
+        for anchor in soup.find_all("a"):
+            normalized: str | None = None
+            for attribute in candidate_attributes:
+                if attribute not in anchor.attrs:
+                    continue
+                normalized = _normalize_nld_article_href(anchor.get(attribute))
+                if normalized:
+                    break
+
+            if not normalized:
+                continue
+            if normalized in seen_local:
+                continue
+
+            seen_local.add(normalized)
+            urls.append(normalized)
+
+        return urls
+
 
 
 def _normalize_thanhnien_url(raw_url: str) -> str:
@@ -146,6 +362,43 @@ def _normalize_kenh14_article_href(raw_href: str | None) -> str | None:
         cleaned = urljoin(f"{_KENH14_BASE_URL}/", cleaned)
 
     if not _KENH14_ARTICLE_PATTERN.match(cleaned):
+        return None
+    return cleaned
+
+
+def _normalize_nld_url(raw_url: str) -> str:
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return _NLD_BASE_URL
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_NLD_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_NLD_BASE_URL}/", cleaned)
+    return cleaned
+
+
+def _normalize_nld_article_href(raw_href: str | None) -> str | None:
+    if not raw_href:
+        return None
+
+    cleaned = raw_href.strip()
+    if not cleaned or cleaned.lower().startswith(("javascript:", "mailto:")):
+        return None
+
+    cleaned = cleaned.split("#", 1)[0].split("?", 1)[0]
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_NLD_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_NLD_BASE_URL}/", cleaned)
+
+    if not _NLD_ARTICLE_PATTERN.match(cleaned):
         return None
     return cleaned
 
@@ -1010,6 +1263,125 @@ def build_kenh14_job_loader(config: IngestConfig, existing_urls: set[str]) -> Jo
         user_agent=config.user_agent,
         max_pages=config.kenh14.max_pages,
         max_empty_pages=config.kenh14.max_empty_pages,
+        request_timeout=config.timeout.request_timeout,
+        proxy=config.proxy,
+    )
+
+
+_DEFAULT_NLD_CATEGORY_SLUGS: tuple[str, ...] = ("phap-luat", "chinh-tri")
+_DEFAULT_NLD_CATEGORIES: tuple[NldCategoryDefinition, ...] = (
+    NldCategoryDefinition(
+        slug="phap-luat",
+        name="Pháp luật",
+        category_id=1961019,
+        landing_url="https://nld.com.vn/phap-luat.htm",
+    ),
+    NldCategoryDefinition(
+        slug="chinh-tri",
+        name="Chính trị",
+        category_id=1961206,
+        landing_url="https://nld.com.vn/thoi-su/chinh-tri.htm",
+    ),
+)
+
+
+def _load_nld_category_catalog(catalog_path: Path) -> dict[str, NldCategoryDefinition]:
+    try:
+        raw_payload = catalog_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Nld category catalog not found: {catalog_path}") from exc
+
+    try:
+        records = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid Nld category catalog: {exc}") from exc
+
+    catalog: dict[str, NldCategoryDefinition] = {}
+    for entry in records:
+        slug = entry.get("slug")
+        name = entry.get("name") or ""
+        category_id = entry.get("category_id")
+        landing_url = entry.get("landing_url") or ""
+
+        if not isinstance(slug, str) or not slug:
+            raise ValueError("Category catalog entries must include a non-empty 'slug'")
+        if not isinstance(category_id, int):
+            try:
+                category_id = int(category_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid category_id for slug '{slug}': {entry.get('category_id')}") from exc
+
+        definition = NldCategoryDefinition(
+            slug=slug.strip().lower(),
+            name=name.strip() or slug,
+            category_id=category_id,
+            landing_url=_normalize_nld_url(landing_url),
+        )
+        catalog[definition.slug] = definition
+
+    if not catalog:
+        raise ValueError("Nld category catalog is empty")
+    return catalog
+
+
+def _select_nld_categories(
+    config: IngestConfig, catalog: dict[str, NldCategoryDefinition]
+) -> list[NldCategoryDefinition]:
+    if config.nld.crawl_all:
+        selected_slugs = list(catalog.keys())
+    elif config.nld.selected_slugs:
+        selected_slugs = list(config.nld.selected_slugs)
+    else:
+        selected_slugs = [slug for slug in _DEFAULT_NLD_CATEGORY_SLUGS if slug in catalog]
+
+    if not selected_slugs:
+        raise ValueError(
+            "No Nld categories selected. Provide --nld-categories or update the category catalog."
+        )
+
+    missing = [slug for slug in selected_slugs if slug not in catalog]
+    if missing:
+        raise ValueError(f"Unknown Nld categories requested: {', '.join(missing)}")
+
+    return [catalog[slug] for slug in selected_slugs]
+
+
+def build_nld_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
+    if config.jobs_file_provided:
+        LOGGER.info("Nld jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
+        return NDJSONJobLoader(
+            jobs_file=config.jobs_file,
+            existing_urls=existing_urls,
+            resume=config.resume,
+        )
+
+    catalog: dict[str, NldCategoryDefinition] = {category.slug: category for category in _DEFAULT_NLD_CATEGORIES}
+
+    catalog_path = Path("data/nld_categories.json")
+    if catalog_path.exists():
+        try:
+            catalog = _load_nld_category_catalog(catalog_path)
+            LOGGER.info("Loaded Nld category catalog from %s", catalog_path)
+        except ValueError as exc:
+            LOGGER.warning("Ignoring invalid Nld category catalog at %s: %s", catalog_path, exc)
+
+    try:
+        categories = _select_nld_categories(config, catalog)
+    except ValueError as exc:
+        raise ValueError(f"Failed to select Nld categories: {exc}") from exc
+
+    LOGGER.info(
+        "Initialized NldCategoryLoader with categories: %s",
+        ", ".join(category.slug for category in categories),
+    )
+
+    return NldCategoryLoader(
+        categories=categories,
+        existing_urls=existing_urls,
+        resume=config.resume,
+        user_agent=config.user_agent,
+        max_pages=config.nld.max_pages,
+        max_empty_pages=config.nld.max_empty_pages,
         request_timeout=config.timeout.request_timeout,
         proxy=config.proxy,
     )
