@@ -4,6 +4,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: crawl_db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-crawl_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crawl_password}
@@ -25,6 +26,7 @@ services:
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: crawl_pgadmin
+    restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@admin.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
@@ -41,6 +43,7 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     container_name: crawl_rabbitmq
+    restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-crawler}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-crawler_password}
