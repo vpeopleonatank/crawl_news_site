@@ -2122,6 +2122,12 @@ _DEFAULT_ZNEWS_CATEGORY_SLUGS: tuple[str, ...] = (
     "giai-tri",
     "doi-song",
     "phap-luat",
+    "suc-khoe",
+    "du-lich",
+    "giao-duc",
+    "oto-xe-may",
+    "xuat-ban",
+    "that-gia",
 )
 _DEFAULT_ZNEWS_CATEGORIES: tuple[ZnewsCategoryDefinition, ...] = (
     ZnewsCategoryDefinition(
@@ -2163,6 +2169,36 @@ _DEFAULT_ZNEWS_CATEGORIES: tuple[ZnewsCategoryDefinition, ...] = (
         slug="phap-luat",
         name="Pháp luật",
         landing_url=_normalize_znews_url("https://lifestyle.znews.vn/phap-luat.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="suc-khoe",
+        name="Sức khỏe",
+        landing_url=_normalize_znews_url("https://znews.vn/suc-khoe.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="du-lich",
+        name="Du lịch",
+        landing_url=_normalize_znews_url("https://znews.vn/du-lich.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="giao-duc",
+        name="Giáo dục",
+        landing_url=_normalize_znews_url("https://znews.vn/giao-duc.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="oto-xe-may",
+        name="Xe",
+        landing_url=_normalize_znews_url("https://znews.vn/oto-xe-may.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="xuat-ban",
+        name="Xuất bản",
+        landing_url=_normalize_znews_url("https://znews.vn/xuat-ban.html"),
+    ),
+    ZnewsCategoryDefinition(
+        slug="that-gia",
+        name="Thật giả",
+        landing_url=_normalize_znews_url("https://znews.vn/that-gia.html"),
     ),
 )
 
