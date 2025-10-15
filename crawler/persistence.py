@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -28,9 +28,18 @@ class PersistenceResult:
 class ArticlePersistence:
     """Handles metadata and asset upserts for parsed articles."""
 
-    def __init__(self, session_factory, storage_root: Path) -> None:
+    def __init__(
+        self,
+        session_factory,
+        storage_root: Path,
+        *,
+        storage_volume_name: Optional[str] = None,
+        storage_volume_path: Optional[Path] = None,
+    ) -> None:
         self._session_factory = session_factory
         self._storage_root = storage_root
+        self._storage_volume_name = storage_volume_name or None
+        self._storage_volume_path = storage_volume_path or storage_root
 
     def upsert_metadata(
         self,
@@ -91,21 +100,36 @@ class ArticlePersistence:
                 article.videos.clear()
 
                 for stored in stored_assets:
-                    relative_path = stored.path.relative_to(self._storage_root)
+                    stored_ref = self._format_asset_reference(stored.path)
                     if stored.source.asset_type == AssetType.IMAGE:
                         article.images.append(
                             ArticleImage(
-                                image_path=str(relative_path),
+                                image_path=stored_ref,
                                 sequence_number=stored.source.sequence,
                             )
                         )
                     else:
                         article.videos.append(
                             ArticleVideo(
-                                video_path=str(relative_path),
+                                video_path=stored_ref,
                                 sequence_number=stored.source.sequence,
                             )
                         )
                 session.commit()
         except Exception as exc:  # pragma: no cover - failure path
             raise ArticlePersistenceError(str(exc)) from exc
+
+    def _format_asset_reference(self, asset_path: Path) -> str:
+        if self._storage_volume_path:
+            try:
+                relative = asset_path.relative_to(self._storage_volume_path)
+            except ValueError:
+                pass
+            else:
+                relative_posix = relative.as_posix()
+                if self._storage_volume_name:
+                    return f"{self._storage_volume_name}:{relative_posix}"
+                return relative_posix
+
+        relative = asset_path.relative_to(self._storage_root)
+        return relative.as_posix()

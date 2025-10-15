@@ -23,6 +23,7 @@ from .parsers import AssetType, ParsedAsset, ParsingError
 from .persistence import ArticlePersistence, ArticlePersistenceError
 from .playwright_support import PlaywrightVideoResolverError
 from .sites import SiteDefinition, get_site_definition, list_sites
+from .storage import StorageMonitor, load_storage_settings
 from .tasks import download_assets_task, resolve_video_assets_task
 from models import Base
 
@@ -286,7 +287,9 @@ def _derive_storage_root(base_root: Path, site_slug: str) -> Path:
 
 def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig:
     jobs_file = args.jobs_file or site.default_jobs_file
-    storage_root = _derive_storage_root(args.storage_root, site.slug)
+    storage_settings = load_storage_settings(args.storage_root)
+    storage_volume_path = storage_settings.active_path
+    storage_root = _derive_storage_root(storage_volume_path, site.slug)
     config = IngestConfig(
         jobs_file=jobs_file,
         storage_root=storage_root,
@@ -296,6 +299,12 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
         user_agent=site.default_user_agent,
         log_dir=storage_root / "logs",
     )
+
+    config.storage_volume_name = storage_settings.active_volume
+    config.storage_volume_path = storage_volume_path
+    config.storage_volumes = storage_settings.volumes
+    config.storage_warn_threshold = storage_settings.warn_threshold
+    config.storage_pause_file = storage_settings.pause_file
 
     config.proxy = _parse_proxy_config(args)
     config.rate_limit.max_workers = args.max_workers
@@ -414,6 +423,8 @@ def _build_task_payload(
         "assets": assets_to_payload(assets),
         "config": {
             "storage_root": str(config.storage_root),
+            "storage_volume": config.storage_volume_name,
+            "storage_volume_root": str(config.storage_volume_path),
             "user_agent": config.user_agent,
             "request_timeout": config.timeout.request_timeout,
             "asset_timeout": config.timeout.asset_timeout,
@@ -677,7 +688,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             resume=config.resume,
         )
 
-    persistence = ArticlePersistence(session_factory=SessionLocal, storage_root=config.storage_root)
+    monitor = StorageMonitor(
+        volume_path=config.storage_volume_path,
+        pause_file=config.storage_pause_file or (config.storage_volume_path / ".pause_ingest"),
+        warn_threshold=config.storage_warn_threshold,
+    )
+
+    if monitor.check_and_maybe_pause():
+        LOGGER.warning("Storage pause sentinel present; stop ingestion before processing jobs.")
+        return 0
+
+    persistence = ArticlePersistence(
+        session_factory=SessionLocal,
+        storage_root=config.storage_root,
+        storage_volume_name=config.storage_volume_name,
+        storage_volume_path=config.storage_volume_path,
+    )
     stats = IngestionStats()
 
     max_workers = max(1, config.rate_limit.max_workers)
@@ -711,6 +737,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for job in job_loader:
+            if monitor.check_and_maybe_pause():
+                LOGGER.warning("Storage threshold reached; pausing ingestion before scheduling additional jobs")
+                break
             stats.processed += 1
             future = executor.submit(
                 _process_job,

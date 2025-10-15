@@ -80,3 +80,9 @@ Password: crawl_password
 ```
 
 The test will show detailed output with all operations and confirm everything works correctly!
+
+## Storage Management
+
+Multi-volume storage management, automatic pause handling, and the helper CLI are
+documented in `docs/storage_operations.md`. Review that runbook before adding a
+new disk or switching the active storage mount.

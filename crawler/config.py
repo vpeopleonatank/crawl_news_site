@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 from urllib.parse import quote
 
 DEFAULT_JOBS_FILE = Path("data/jobs.ndjson")
@@ -181,6 +181,11 @@ class PloCategoryConfig:
 class IngestConfig:
     jobs_file: Path = DEFAULT_JOBS_FILE
     storage_root: Path = DEFAULT_STORAGE_ROOT
+    storage_volume_name: str = "default"
+    storage_volume_path: Path = DEFAULT_STORAGE_ROOT
+    storage_volumes: Dict[str, Path] = field(default_factory=dict)
+    storage_warn_threshold: float = 0.9
+    storage_pause_file: Optional[Path] = None
     db_url: Optional[str] = None
     user_agent: str = DEFAULT_USER_AGENT
     sitemap_max_documents: int | None = 5
@@ -202,11 +207,28 @@ class IngestConfig:
     plo: PloCategoryConfig = field(default_factory=PloCategoryConfig)
 
     def ensure_directories(self) -> None:
+        self.storage_volume_path.mkdir(parents=True, exist_ok=True)
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        if self.storage_pause_file:
+            self.storage_pause_file.parent.mkdir(parents=True, exist_ok=True)
 
     def raw_html_path(self, article_id: str) -> Path:
         return self.storage_root / "raw" / f"{article_id}.html"
 
     def article_asset_root(self, article_id: str) -> Path:
         return self.storage_root / "articles" / article_id
+
+    def format_asset_reference(self, asset_path: Path) -> str:
+        """Return a persistent reference for an asset path including volume metadata."""
+
+        volume_path = self.storage_volume_path
+        try:
+            relative = asset_path.relative_to(volume_path)
+        except ValueError:
+            relative = asset_path.relative_to(self.storage_root)
+            return relative.as_posix()
+        relative_posix = relative.as_posix()
+        if self.storage_volume_name:
+            return f"{self.storage_volume_name}:{relative_posix}"
+        return relative_posix

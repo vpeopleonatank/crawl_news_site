@@ -48,8 +48,14 @@ def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
         ),
     )
 
+    storage_volume_name = str(config_payload.get("storage_volume", "default"))
+    storage_volume_root_raw = config_payload.get("storage_volume_root")
+    storage_volume_root = Path(storage_volume_root_raw) if storage_volume_root_raw else storage_root
+
     config = IngestConfig(
         storage_root=storage_root,
+        storage_volume_name=storage_volume_name,
+        storage_volume_path=storage_volume_root,
         user_agent=str(config_payload.get("user_agent", IngestConfig().user_agent)),
         timeout=timeout,
     )
@@ -161,7 +167,12 @@ def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
         with AssetManager(config) as manager:
             stored_assets = manager.download_assets(article_id, assets)
 
-        persistence = ArticlePersistence(session_factory=session_factory, storage_root=config.storage_root)
+        persistence = ArticlePersistence(
+            session_factory=session_factory,
+            storage_root=config.storage_root,
+            storage_volume_name=config.storage_volume_name,
+            storage_volume_path=config.storage_volume_path,
+        )
         persistence.persist_assets(article_id, stored_assets)
 
         LOGGER.info(
