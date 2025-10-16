@@ -1,3 +1,5 @@
+import io
+import logging
 import os
 import unittest
 from collections import namedtuple
@@ -31,6 +33,9 @@ class StorageSettingsTestCase(unittest.TestCase):
                 "STORAGE_ACTIVE_VOLUME": "hdd02",
                 "STORAGE_WARN_THRESHOLD": "95",
                 "STORAGE_PAUSE_FILE": f"{tmpdir}/pause.flag",
+                "STORAGE_NOTIFY_TELEGRAM_BOT_TOKEN": "token-123",
+                "STORAGE_NOTIFY_TELEGRAM_CHAT_ID": "987654321",
+                "STORAGE_NOTIFY_TELEGRAM_THREAD_ID": "42",
             },
             clear=True,
         ):
@@ -39,6 +44,22 @@ class StorageSettingsTestCase(unittest.TestCase):
             self.assertEqual(settings.active_path, Path("/mnt/storage02").resolve())
             self.assertAlmostEqual(settings.warn_threshold, 0.95)
             self.assertEqual(settings.pause_file, Path(tmpdir, "pause.flag").resolve())
+            self.assertEqual(settings.notifications.telegram_bot_token, "token-123")
+            self.assertEqual(settings.notifications.telegram_chat_id, "987654321")
+            self.assertEqual(settings.notifications.telegram_thread_id, 42)
+
+    def test_invalid_telegram_thread_id_raises(self) -> None:
+        with TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "STORAGE_NOTIFY_TELEGRAM_BOT_TOKEN": "token",
+                "STORAGE_NOTIFY_TELEGRAM_CHAT_ID": "chat",
+                "STORAGE_NOTIFY_TELEGRAM_THREAD_ID": "not-a-number",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(ValueError):
+                load_storage_settings(Path(tmpdir))
 
 
 class StorageMonitorTestCase(unittest.TestCase):
@@ -59,6 +80,65 @@ class StorageMonitorTestCase(unittest.TestCase):
 
             monitor.clear_pause()
             self.assertFalse(pause_file.exists())
+
+    def test_notifier_invoked_when_threshold_exceeded(self) -> None:
+        class DummyNotifier:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def notify_threshold(
+                self,
+                *,
+                volume_path: Path,
+                usage_fraction: float,
+                threshold_fraction: float,
+                pause_file: Path,
+            ) -> None:
+                self.calls.append(
+                    {
+                        "volume_path": volume_path,
+                        "usage_fraction": usage_fraction,
+                        "threshold_fraction": threshold_fraction,
+                        "pause_file": pause_file,
+                    }
+                )
+
+        with TemporaryDirectory() as tmpdir:
+            volume_path = Path(tmpdir) / "volume"
+            volume_path.mkdir()
+            pause_file = Path(tmpdir) / "pause.flag"
+            notifier = DummyNotifier()
+            monitor = StorageMonitor(volume_path, pause_file, warn_threshold=0.8, notifier=notifier)
+
+            usage_tuple = namedtuple("usage", ("total", "used", "free"))
+            with patch("crawler.storage.shutil.disk_usage") as mock_usage:
+                mock_usage.return_value = usage_tuple(total=100, used=0, free=10)
+                monitor.check_and_maybe_pause()
+
+            self.assertTrue(pause_file.exists())
+            self.assertEqual(len(notifier.calls), 1)
+            call_kwargs = notifier.calls[0]
+            self.assertGreaterEqual(call_kwargs["usage_fraction"], 0.8)
+            self.assertEqual(call_kwargs["pause_file"], pause_file)
+
+    def test_httpx_logger_redacts_token(self) -> None:
+        logger = logging.getLogger("httpx")
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        previous_level = logger.level
+        logger.setLevel(logging.INFO)
+        try:
+            logger.info(
+                'HTTP Request: POST https://api.telegram.org/bot123456:ABCdef/sendMessage "HTTP/1.1 200 OK"'
+            )
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+        output = stream.getvalue()
+        self.assertNotIn("123456:ABCdef", output)
+        self.assertIn("bot<redacted>", output)
 
 
 class StorageCLIHelpersTestCase(unittest.TestCase):

@@ -24,7 +24,7 @@ from .persistence import ArticlePersistence, ArticlePersistenceError
 from .parsers import AssetType
 from .playwright_support import PlaywrightVideoResolverError
 from .sites import get_site_definition
-from .storage import StorageMonitor
+from .storage import StorageMonitor, build_storage_notifier
 
 
 LOGGER = logging.getLogger(__name__)
@@ -79,6 +79,25 @@ def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
     else:
         config.storage_pause_file = config.storage_volume_path / ".pause_ingest"
 
+    notifications_payload = config_payload.get("storage_notifications")
+    if isinstance(notifications_payload, Mapping):
+        token = notifications_payload.get("telegram_bot_token")
+        chat_id = notifications_payload.get("telegram_chat_id")
+        thread_value = notifications_payload.get("telegram_thread_id")
+
+        config.storage_notifications.telegram_bot_token = str(token).strip() if token else None
+        config.storage_notifications.telegram_chat_id = str(chat_id).strip() if chat_id else None
+        if thread_value is not None and thread_value != "":
+            try:
+                config.storage_notifications.telegram_thread_id = int(thread_value)
+            except (TypeError, ValueError):
+                LOGGER.warning(
+                    "Invalid Telegram thread id %r in payload; ignoring", thread_value
+                )
+                config.storage_notifications.telegram_thread_id = None
+        else:
+            config.storage_notifications.telegram_thread_id = None
+
     proxy_payload = config_payload.get("proxy")
     if isinstance(proxy_payload, Mapping) and proxy_payload:
         config.proxy = ProxyConfig(
@@ -103,7 +122,13 @@ def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
 
 def _ensure_storage_capacity(config: IngestConfig, *, context: str) -> None:
     pause_file = config.storage_pause_file or (config.storage_volume_path / ".pause_ingest")
-    monitor = StorageMonitor(config.storage_volume_path, pause_file, config.storage_warn_threshold)
+    notifier = build_storage_notifier(config.storage_notifications)
+    monitor = StorageMonitor(
+        config.storage_volume_path,
+        pause_file,
+        config.storage_warn_threshold,
+        notifier=notifier,
+    )
     if monitor.check_and_maybe_pause():
         percentage = round(config.storage_warn_threshold * 100, 2)
         message = (

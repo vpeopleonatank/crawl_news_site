@@ -5,10 +5,15 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Mapping
+from typing import Dict, Iterable, Mapping, Optional, Protocol
+
+import httpx
+
+from .config import StorageNotificationConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -16,9 +21,13 @@ _VOLUMES_ENV = "STORAGE_VOLUMES"
 _ACTIVE_ENV = "STORAGE_ACTIVE_VOLUME"
 _WARN_ENV = "STORAGE_WARN_THRESHOLD"
 _PAUSE_ENV = "STORAGE_PAUSE_FILE"
+_TELEGRAM_TOKEN_ENV = "STORAGE_NOTIFY_TELEGRAM_BOT_TOKEN"
+_TELEGRAM_CHAT_ENV = "STORAGE_NOTIFY_TELEGRAM_CHAT_ID"
+_TELEGRAM_THREAD_ENV = "STORAGE_NOTIFY_TELEGRAM_THREAD_ID"
 
 _DEFAULT_VOLUME_NAME = "default"
 _DEFAULT_WARN_THRESHOLD = 0.9
+_TELEGRAM_TOKEN_RE = re.compile(r"/bot(?P<token>[^/\s]+)/")
 
 
 def _normalise_path(raw_path: str) -> Path:
@@ -84,6 +93,54 @@ def _coerce_threshold(raw_value: str | None) -> float:
     return value
 
 
+def _load_notification_settings() -> StorageNotificationConfig:
+    token_raw = os.getenv(_TELEGRAM_TOKEN_ENV)
+    chat_raw = os.getenv(_TELEGRAM_CHAT_ENV)
+    thread_raw = os.getenv(_TELEGRAM_THREAD_ENV)
+
+    settings = StorageNotificationConfig()
+    if token_raw and token_raw.strip():
+        settings.telegram_bot_token = token_raw.strip()
+    if chat_raw and chat_raw.strip():
+        settings.telegram_chat_id = chat_raw.strip()
+    if thread_raw and thread_raw.strip():
+        cleaned = thread_raw.strip()
+        try:
+            settings.telegram_thread_id = int(cleaned)
+        except ValueError as exc:
+            raise ValueError(f"Invalid Telegram thread ID {cleaned!r}") from exc
+    return settings
+
+
+def _mask_telegram_token(text: str) -> str:
+    return _TELEGRAM_TOKEN_RE.sub("/bot<redacted>/", text)
+
+
+class _HttpxTelegramFilter(logging.Filter):
+    """Redact Telegram bot tokens from httpx request logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - exercised indirectly
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        masked = _mask_telegram_token(message)
+        if masked != message:
+            record.msg = masked
+            record.args = ()
+        return True
+
+
+def _ensure_httpx_filter() -> None:
+    logger = logging.getLogger("httpx")
+    if any(isinstance(f, _HttpxTelegramFilter) for f in logger.filters):
+        return
+    logger.addFilter(_HttpxTelegramFilter())
+
+
+_ensure_httpx_filter()
+
+
 @dataclass(slots=True)
 class StorageSettings:
     """Resolved storage configuration."""
@@ -92,10 +149,85 @@ class StorageSettings:
     active_volume: str
     warn_threshold: float
     pause_file: Path
+    notifications: StorageNotificationConfig
 
     @property
     def active_path(self) -> Path:
         return self.volumes[self.active_volume]
+
+
+class StorageThresholdNotifier(Protocol):
+    """Observer notified when storage approaches capacity."""
+
+    def notify_threshold(
+        self,
+        *,
+        volume_path: Path,
+        usage_fraction: float,
+        threshold_fraction: float,
+        pause_file: Path,
+    ) -> None:
+        ...
+
+
+@dataclass(slots=True)
+class TelegramNotifier:
+    """Send storage capacity alerts to Telegram."""
+
+    bot_token: str
+    chat_id: str
+    thread_id: Optional[int] = None
+    timeout: float = 10.0
+
+    def notify_threshold(
+        self,
+        *,
+        volume_path: Path,
+        usage_fraction: float,
+        threshold_fraction: float,
+        pause_file: Path,
+    ) -> None:
+        usage_percent = round(usage_fraction * 100, 2)
+        threshold_percent = round(threshold_fraction * 100, 2)
+        message_lines = [
+            "Storage usage threshold reached.",
+            f"Volume: {volume_path}",
+            f"Usage: {usage_percent:.2f}% (threshold {threshold_percent:.2f}%)",
+            f"Pause sentinel: {pause_file}",
+        ]
+        message_text = "\n".join(message_lines).strip()
+        if not message_text:
+            LOGGER.warning("Skipping Telegram notification because message text is empty (volume=%s)", volume_path)
+            return
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "disable_notification": False,
+            "disable_web_page_preview": True,
+        }
+        if self.thread_id is not None:
+            payload["message_thread_id"] = self.thread_id
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        try:
+            LOGGER.debug("Sending Telegram storage alert: chat=%s thread=%s", self.chat_id, self.thread_id)
+            response = httpx.post(url, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            masked_error = _mask_telegram_token(str(exc))
+            LOGGER.warning("Failed to send Telegram notification: %s", masked_error)
+
+
+def build_storage_notifier(settings: StorageNotificationConfig | None) -> StorageThresholdNotifier | None:
+    if not settings:
+        return None
+    if settings.telegram_bot_token and settings.telegram_chat_id:
+        return TelegramNotifier(
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            thread_id=settings.telegram_thread_id,
+        )
+    return None
 
 
 def load_storage_settings(requested_root: Path) -> StorageSettings:
@@ -124,20 +256,31 @@ def load_storage_settings(requested_root: Path) -> StorageSettings:
         active_volume=active,
         warn_threshold=warn_threshold,
         pause_file=pause_file,
+        notifications=_load_notification_settings(),
     )
 
 
 class StorageMonitor:
     """Monitor active storage volume usage and surface pause signals."""
 
-    def __init__(self, volume_path: Path, pause_file: Path, warn_threshold: float) -> None:
+    def __init__(
+        self,
+        volume_path: Path,
+        pause_file: Path,
+        warn_threshold: float,
+        notifier: StorageThresholdNotifier | None = None,
+    ) -> None:
         self._volume_path = volume_path
         self._pause_file = pause_file
         self._warn_threshold = warn_threshold
+        if notifier is None:
+            notifier = build_storage_notifier(_load_notification_settings())
+        self._notifier = notifier
 
     @classmethod
     def from_settings(cls, settings: StorageSettings) -> "StorageMonitor":
-        return cls(settings.active_path, settings.pause_file, settings.warn_threshold)
+        notifier = build_storage_notifier(settings.notifications)
+        return cls(settings.active_path, settings.pause_file, settings.warn_threshold, notifier=notifier)
 
     @property
     def pause_file(self) -> Path:
@@ -185,6 +328,16 @@ class StorageMonitor:
                 self._warn_threshold * 100,
                 self._pause_file,
             )
+            if self._notifier is not None:
+                try:
+                    self._notifier.notify_threshold(
+                        volume_path=self._volume_path,
+                        usage_fraction=fraction,
+                        threshold_fraction=self._warn_threshold,
+                        pause_file=self._pause_file,
+                    )
+                except Exception:
+                    LOGGER.exception("Storage notifier raised unexpectedly")
             self.mark_paused()
             return True
         return False

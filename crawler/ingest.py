@@ -23,7 +23,7 @@ from .parsers import AssetType, ParsedAsset, ParsingError
 from .persistence import ArticlePersistence, ArticlePersistenceError
 from .playwright_support import PlaywrightVideoResolverError
 from .sites import SiteDefinition, get_site_definition, list_sites
-from .storage import StorageMonitor, load_storage_settings
+from .storage import StorageMonitor, build_storage_notifier, load_storage_settings
 from .tasks import download_assets_task, resolve_video_assets_task
 from models import Base
 
@@ -305,6 +305,7 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
     config.storage_volumes = storage_settings.volumes
     config.storage_warn_threshold = storage_settings.warn_threshold
     config.storage_pause_file = storage_settings.pause_file
+    config.storage_notifications = storage_settings.notifications
 
     config.proxy = _parse_proxy_config(args)
     config.rate_limit.max_workers = args.max_workers
@@ -435,6 +436,13 @@ def _build_task_payload(
             "hls_download_timeout": config.timeout.hls_download_timeout,
         },
     }
+
+    if config.storage_notifications.has_telegram():
+        payload["config"]["storage_notifications"] = {
+            "telegram_bot_token": config.storage_notifications.telegram_bot_token,
+            "telegram_chat_id": config.storage_notifications.telegram_chat_id,
+            "telegram_thread_id": config.storage_notifications.telegram_thread_id,
+        }
 
     if config.proxy:
         payload["config"]["proxy"] = {
@@ -696,6 +704,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         volume_path=config.storage_volume_path,
         pause_file=config.storage_pause_file or (config.storage_volume_path / ".pause_ingest"),
         warn_threshold=config.storage_warn_threshold,
+        notifier=build_storage_notifier(config.storage_notifications),
     )
 
     if monitor.check_and_maybe_pause():

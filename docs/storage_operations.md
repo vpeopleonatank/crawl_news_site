@@ -13,6 +13,10 @@ STORAGE_VOLUMES=primary:/app/storage;hdd02:/app/storage/storage02
 STORAGE_ACTIVE_VOLUME=primary
 STORAGE_WARN_THRESHOLD=0.9   # 90% usage
 STORAGE_PAUSE_FILE=/app/storage/.pause_ingest
+STORAGE_NOTIFY_TELEGRAM_BOT_TOKEN=123456789:ABCDEF
+STORAGE_NOTIFY_TELEGRAM_CHAT_ID=-10011223344
+# Optional: thread/topic for forum-style chats
+STORAGE_NOTIFY_TELEGRAM_THREAD_ID=42
 ```
 
 - `STORAGE_VOLUMES` is a semicolon-separated list of `name:path` pairs. Paths may be
@@ -22,6 +26,9 @@ STORAGE_PAUSE_FILE=/app/storage/.pause_ingest
   the active partition exceeds the threshold, ingestion drops a pause sentinel file.
 - `STORAGE_PAUSE_FILE` controls where the sentinel is created. Defaults to
   `<active_volume>/.pause_ingest`.
+- `STORAGE_NOTIFY_TELEGRAM_BOT_TOKEN` and `STORAGE_NOTIFY_TELEGRAM_CHAT_ID` enable
+  Telegram notifications when storage crosses the warn threshold. `STORAGE_NOTIFY_TELEGRAM_THREAD_ID`
+  is optional and targets a specific topic in a forum-style group.
 
 When no volumes are defined, the CLI `--storage-root` flag behaves exactly as
 before. Because the `.env` file is mounted into the `test_app` container at
@@ -37,6 +44,8 @@ docker compose run --rm test_app \
 - Each run checks the pause sentinel before fetching jobs. If the file exists or
   the active volume exceeds the warn threshold, ingestion stops after the current
   article and logs a warning.
+- When Telegram notifications are configured, the system sends a message the first
+  time the threshold is exceeded and the pause sentinel is created.
 - In Celery tasks, downloaded asset paths now include the volume identifier
   (`volume:relative/path`). Existing records without a prefix continue to work.
 

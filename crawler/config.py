@@ -35,6 +35,16 @@ class TimeoutConfig:
 
 
 @dataclass(slots=True)
+class StorageNotificationConfig:
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    telegram_thread_id: Optional[int] = None
+
+    def has_telegram(self) -> bool:
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+
+@dataclass(slots=True)
 class ProxyConfig:
     """Configuration for outbound proxy usage and IP rotation."""
 
@@ -186,6 +196,7 @@ class IngestConfig:
     storage_volumes: Dict[str, Path] = field(default_factory=dict)
     storage_warn_threshold: float = 0.9
     storage_pause_file: Optional[Path] = None
+    storage_notifications: StorageNotificationConfig = field(default_factory=StorageNotificationConfig)
     db_url: Optional[str] = None
     user_agent: str = DEFAULT_USER_AGENT
     sitemap_max_documents: int | None = 5
