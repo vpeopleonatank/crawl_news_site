@@ -425,6 +425,10 @@ def _build_task_payload(
             "storage_root": str(config.storage_root),
             "storage_volume": config.storage_volume_name,
             "storage_volume_root": str(config.storage_volume_path),
+            "storage_warn_threshold": config.storage_warn_threshold,
+            "storage_pause_file": str(config.storage_pause_file)
+            if config.storage_pause_file
+            else None,
             "user_agent": config.user_agent,
             "request_timeout": config.timeout.request_timeout,
             "asset_timeout": config.timeout.asset_timeout,

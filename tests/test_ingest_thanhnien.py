@@ -256,6 +256,8 @@ class BuildTaskPayloadTestCase(unittest.TestCase):
 
         self.assertEqual(payload["site"], site.slug)
         self.assertEqual(payload["assets"][0]["referrer"], "https://example.com/article")
+        self.assertEqual(payload["config"]["storage_warn_threshold"], config.storage_warn_threshold)
+        self.assertIsNone(payload["config"]["storage_pause_file"])
 
 
 if __name__ == "__main__":

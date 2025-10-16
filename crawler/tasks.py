@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from celery import Task
+from celery.exceptions import WorkerShutdown
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -23,6 +24,7 @@ from .persistence import ArticlePersistence, ArticlePersistenceError
 from .parsers import AssetType
 from .playwright_support import PlaywrightVideoResolverError
 from .sites import get_site_definition
+from .storage import StorageMonitor
 
 
 LOGGER = logging.getLogger(__name__)
@@ -60,6 +62,23 @@ def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
         timeout=timeout,
     )
 
+    warn_threshold = config_payload.get("storage_warn_threshold")
+    if warn_threshold is not None:
+        try:
+            config.storage_warn_threshold = max(0.0, min(float(warn_threshold), 0.999))
+        except (TypeError, ValueError):
+            LOGGER.warning(
+                "Invalid storage_warn_threshold %r in Celery payload; using existing value %.3f",
+                warn_threshold,
+                config.storage_warn_threshold,
+            )
+
+    pause_file_raw = config_payload.get("storage_pause_file")
+    if pause_file_raw:
+        config.storage_pause_file = Path(pause_file_raw)
+    else:
+        config.storage_pause_file = config.storage_volume_path / ".pause_ingest"
+
     proxy_payload = config_payload.get("proxy")
     if isinstance(proxy_payload, Mapping) and proxy_payload:
         config.proxy = ProxyConfig(
@@ -80,6 +99,19 @@ def _build_config(config_payload: Mapping[str, Any]) -> IngestConfig:
 
     config.ensure_directories()
     return config
+
+
+def _ensure_storage_capacity(config: IngestConfig, *, context: str) -> None:
+    pause_file = config.storage_pause_file or (config.storage_volume_path / ".pause_ingest")
+    monitor = StorageMonitor(config.storage_volume_path, pause_file, config.storage_warn_threshold)
+    if monitor.check_and_maybe_pause():
+        percentage = round(config.storage_warn_threshold * 100, 2)
+        message = (
+            f"Storage usage threshold {percentage}% reached for volume {monitor.volume_path}; "
+            f"stopping Celery worker during {context}"
+        )
+        LOGGER.warning(message)
+        raise WorkerShutdown(message)
 
 
 @lru_cache(maxsize=8)
@@ -164,6 +196,8 @@ def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
         session_factory = _session_factory(db_url)
         assets = assets_from_payload(assets_payload)
 
+        _ensure_storage_capacity(config, context=f"pre-download check for article {article_id}")
+
         with AssetManager(config) as manager:
             stored_assets = manager.download_assets(article_id, assets)
 
@@ -174,6 +208,8 @@ def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
             storage_volume_path=config.storage_volume_path,
         )
         persistence.persist_assets(article_id, stored_assets)
+
+        _ensure_storage_capacity(config, context=f"post-download check for article {article_id}")
 
         LOGGER.info(
             "Downloaded %d assets for article %s", len(stored_assets), article_id
