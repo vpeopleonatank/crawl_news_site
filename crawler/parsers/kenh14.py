@@ -208,13 +208,46 @@ class Kenh14Parser(ArticleParser):
 
     def _extract_tags(self, soup: BeautifulSoup) -> list[str]:
         tags: list[str] = []
+        seen: set[str] = set()
+
+        for selector in (
+            "meta[property='article:tag']",
+            "meta[name='news_keywords']",
+            "meta[name='keywords']",
+        ):
+            for meta_tag in soup.select(selector):
+                content = meta_tag.get("content")
+                if not content:
+                    continue
+                for piece in content.split(","):
+                    candidate = self._normalize_tag(piece)
+                    if not candidate:
+                        continue
+                    key = candidate.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    tags.append(candidate)
+
         for anchor in soup.select(
             "div.kbwc-tags a, div.kbw__tags a, ul.kbw__tags a, ul.tag-list a, div.tag a"
         ):
-            text = anchor.get_text(strip=True)
-            if text and text not in tags:
-                tags.append(text)
+            candidate = self._normalize_tag(anchor.get_text(strip=True))
+            if not candidate:
+                continue
+            key = candidate.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            tags.append(candidate)
+
         return tags
+
+    def _normalize_tag(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
     def _extract_assets(self, container: Tag) -> Iterable[ParsedAsset]:
         sequence = 1

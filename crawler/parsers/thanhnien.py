@@ -74,10 +74,7 @@ class ThanhnienParser(ArticleParser):
                 if raw_datetime:
                     publish_date = self._parse_datetime_text(raw_datetime)
 
-        tags = []
-        tag_section = soup.select_one("div.detail__tags, div[data-role='tags']")
-        if tag_section:
-            tags = [tag.get_text(strip=True) for tag in tag_section.find_all("a") if tag.get_text(strip=True)]
+        tags = self._extract_tags(soup)
 
         assets = []
         sequence = 1
@@ -147,6 +144,49 @@ class ThanhnienParser(ArticleParser):
             dt = dt.replace(tzinfo=tzinfo)
 
         return dt
+
+    def _extract_tags(self, soup: BeautifulSoup) -> list[str]:
+        tags: list[str] = []
+        seen: set[str] = set()
+
+        for selector in (
+            "meta[property='article:tag']",
+            "meta[name='news_keywords']",
+            "meta[name='keywords']",
+        ):
+            for meta_tag in soup.select(selector):
+                content = meta_tag.get("content")
+                if not content:
+                    continue
+                for piece in content.split(","):
+                    candidate = self._normalize_tag(piece)
+                    if not candidate:
+                        continue
+                    key = candidate.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    tags.append(candidate)
+
+        tag_section = soup.select_one("div.detail__tags, div[data-role='tags']")
+        if tag_section:
+            for anchor in tag_section.find_all("a"):
+                candidate = self._normalize_tag(anchor.get_text(strip=True))
+                if not candidate:
+                    continue
+                key = candidate.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                tags.append(candidate)
+
+        return tags
+
+    def _normalize_tag(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
     def _extract_figure_asset(self, block: Tag, assets: list[ParsedAsset], sequence: int) -> int:
         img = block.find("img")
