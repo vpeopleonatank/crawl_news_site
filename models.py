@@ -25,6 +25,7 @@ class Article(Base):
     content = Column(Text)
     category_id = Column(String(100), index=True)
     category_name = Column(String(200), index=True)
+    ingest_category_slug = Column(String(150), index=True)
     comments = Column(JSONB)
     tags = Column(String(500), index=True)
     url = Column(String(2000), unique=True, nullable=False)
@@ -44,6 +45,12 @@ class Article(Base):
         back_populates="article",
         cascade="all, delete-orphan",
         order_by="ArticleVideo.sequence_number"
+    )
+    pending_videos = relationship(
+        "PendingVideoAsset",
+        back_populates="article",
+        cascade="all, delete-orphan",
+        order_by="PendingVideoAsset.sequence_number"
     )
     
     def __repr__(self):
@@ -93,6 +100,37 @@ class ArticleVideo(Base):
     
     def __repr__(self):
         return f"<ArticleVideo(id={self.id}, article_id={self.article_id}, path='{self.video_path}')>"
+
+
+class PendingVideoAsset(Base):
+    __tablename__ = 'pending_video_assets'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid7)
+    article_id = Column(UUID(as_uuid=True), ForeignKey('articles.id', ondelete='CASCADE'), nullable=False)
+    site_slug = Column(String(100), nullable=False, index=True)
+    article_url = Column(String(2000), nullable=False)
+    category_id = Column(String(100), index=True)
+    category_name = Column(String(200), index=True)
+    category_key = Column(String(200), index=True)
+    ingest_category_slug = Column(String(150), index=True)
+    sequence_number = Column(Integer, nullable=False)
+    source_url = Column(String(2000), nullable=False)
+    referrer = Column(String(2000))
+    deferred_reason = Column(String(200))
+    deferred_at = Column(DateTime, default=func.now(), nullable=False)
+    enqueued_at = Column(DateTime)
+
+    article = relationship("Article", back_populates="pending_videos")
+
+    __table_args__ = (
+        Index('ix_pending_video_article_sequence', 'article_id', 'sequence_number', unique=True),
+    )
+
+    def __repr__(self):
+        return (
+            f"<PendingVideoAsset(article_id={self.article_id}, sequence={self.sequence_number}, "
+            f"source_url='{self.source_url[:50]}...')>"
+        )
 
 
 # Helper functions for generating file paths

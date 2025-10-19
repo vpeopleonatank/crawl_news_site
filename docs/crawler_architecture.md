@@ -560,7 +560,8 @@ services:
 job = ArticleJob(
     url="https://thanhnien.vn/kham-pha-xu-so-than-tien-post1234567.html",
     sitemap_url="https://thanhnien.vn/sitemap-2024-01.xml",
-    lastmod="2024-01-15T10:30:00+07:00"
+    lastmod="2024-01-15T10:30:00+07:00",
+    category_slug="thoi-su-phap-luat",
 )
 ```
 
@@ -797,6 +798,20 @@ Filesystem:
 1. Subclass `AssetManager`
 2. Override `download_assets()` method
 3. Inject custom manager in task handler
+
+### Video Download Policy
+- Limit video downloads to approved categories with `--video-enabled-categories` (comma-separated list; matches category id, display name, or ingest category slug case-insensitively)
+- Articles outside the allowlist keep their video assets in `pending_video_assets` for later review while still persisting metadata and images
+- Once categories are approved, rerun ingestion with the same allowlist plus `--process-pending-videos`, or invoke the standalone utility to process the backlog without re-fetching HTML:
+  ```bash
+  python -m crawler.process_pending_videos \
+    --site thanhnien \
+    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+    --storage-root /app/storage \
+    --video-enabled-categories sports,magazine \
+    --use-playwright
+  ```
+- Download completion removes entries from `pending_video_assets`, keeping the backlog tidy
 
 ---
 

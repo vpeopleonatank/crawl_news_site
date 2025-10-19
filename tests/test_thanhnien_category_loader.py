@@ -113,6 +113,7 @@ class ThanhnienCategoryLoaderTestCase(unittest.TestCase):
         self.assertEqual(loader.stats.emitted, 2)
         self.assertEqual(loader.stats.skipped_existing, 1)
         self.assertEqual(loader.stats.skipped_duplicate, 1)
+        self.assertTrue(all(job.category_slug == self.category.slug for job in jobs))
 
     def test_category_loader_continues_when_empty_guard_disabled(self) -> None:
         category = self.category
@@ -176,6 +177,7 @@ class ThanhnienCategoryLoaderTestCase(unittest.TestCase):
                 "https://thanhnien.vn/timeline-article-185000000000000011.htm",
             ],
         )
+        self.assertTrue(all(job.category_slug == category.slug for job in jobs))
 
     def test_category_loader_passes_proxy_to_httpx_client(self) -> None:
         proxy = ProxyConfig.from_endpoint("127.0.0.1:9191")

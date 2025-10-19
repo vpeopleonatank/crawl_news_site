@@ -76,7 +76,7 @@ The preferred implementation path is a dedicated `ThanhnienCategoryLoader` that 
 - For each selected category:
   1. Yield the article URLs from the category’s landing page to capture the most recent posts.
   2. Page through the timeline endpoint (`/timelinelist/{category_id}/{limit}.htm`) until a stopping condition is reached (resume mode, duplicate detection, or depth limit).
-  3. Populate `ArticleJob(url=..., lastmod=...)` so downstream components can dedupe and persist.
+  3. Populate `ArticleJob(url=..., lastmod=..., category_slug=category.slug)` so downstream components can dedupe and persist and we retain the configured slug.
 - Respect the global ingestion settings (resume mode, request throttling, etc.) that are already enforced by `crawler.ingest`.
 
 ### Category Catalog and Selection

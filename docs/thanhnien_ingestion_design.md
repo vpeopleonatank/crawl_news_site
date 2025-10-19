@@ -152,6 +152,17 @@
       --max-workers 4 \
       --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db
   ```
+- Restrict video downloads to specific categories by passing `--video-enabled-categories` (comma-separated list; values may be category ids, display names, or ingest slugs). Articles outside the list keep their video assets in the `pending_video_assets` backlog while all metadata and images persist as usual.
+- When categories are later approved, re-run ingestion with the same allowlist plus `--process-pending-videos` or execute the dedicated CLI below to enqueue deferred assets without refetching articles:
+  ```bash
+  python -m crawler.process_pending_videos \
+    --site thanhnien \
+    --db-url postgresql://crawl_user:crawl_password@localhost:5433/crawl_db \
+    --storage-root storage \
+    --video-enabled-categories sports,magazine
+  ```
+  Pass `--use-playwright` and `--playwright-timeout` if HLS resolution is needed during the replay.
+- Deferred entries are cleared automatically once the corresponding videos finish downloading.
 - To clear outstanding jobs, purge the queue via `docker compose exec rabbitmq rabbitmqctl purge_queue celery` before re-running ingestion.
 
 ## Next Implementation Steps

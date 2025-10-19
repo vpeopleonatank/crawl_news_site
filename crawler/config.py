@@ -188,6 +188,38 @@ class PloCategoryConfig:
 
 
 @dataclass(slots=True)
+class VideoDownloadConfig:
+    """Controls for per-category video asset downloads."""
+
+    enabled_categories: tuple[str, ...] = ()
+    process_pending: bool = False
+
+    @staticmethod
+    def _normalize(value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().lower()
+        return cleaned or None
+
+    def categories_key_set(self) -> set[str]:
+        return {
+            key
+            for key in (self._normalize(category) for category in self.enabled_categories)
+            if key
+        }
+
+    def category_allowed(self, *identifiers: str | None) -> bool:
+        allowed = self.categories_key_set()
+        if not allowed:
+            return True
+        for candidate in identifiers:
+            key = self._normalize(candidate)
+            if key and key in allowed:
+                return True
+        return False
+
+
+@dataclass(slots=True)
 class IngestConfig:
     jobs_file: Path = DEFAULT_JOBS_FILE
     storage_root: Path = DEFAULT_STORAGE_ROOT
@@ -216,6 +248,7 @@ class IngestConfig:
     nld: NldCategoryConfig = field(default_factory=NldCategoryConfig)
     kenh14: Kenh14CategoryConfig = field(default_factory=Kenh14CategoryConfig)
     plo: PloCategoryConfig = field(default_factory=PloCategoryConfig)
+    video: VideoDownloadConfig = field(default_factory=VideoDownloadConfig)
 
     def ensure_directories(self) -> None:
         self.storage_volume_path.mkdir(parents=True, exist_ok=True)

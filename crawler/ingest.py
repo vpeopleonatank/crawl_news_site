@@ -11,8 +11,9 @@ from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+from uuid import UUID
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, or_
 from sqlalchemy.orm import sessionmaker
 
 from .assets import assets_to_payload
@@ -25,7 +26,7 @@ from .playwright_support import PlaywrightVideoResolverError
 from .sites import SiteDefinition, get_site_definition, list_sites
 from .storage import StorageMonitor, build_storage_notifier, load_storage_settings
 from .tasks import download_assets_task, resolve_video_assets_task
-from models import Base
+from models import Base, PendingVideoAsset
 
 LOGGER = logging.getLogger(__name__)
 _FETCH_FAILURE_LOG = "fetch_failures.ndjson"
@@ -92,6 +93,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=TimeoutConfig().hls_download_timeout,
         help="Maximum seconds to allow ffmpeg when downloading HLS video streams (default: 900).",
+    )
+    parser.add_argument(
+        "--video-enabled-categories",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of category identifiers that should download video assets. "
+            "When provided, categories not listed will defer video downloads."
+        ),
+    )
+    parser.add_argument(
+        "--process-pending-videos",
+        action="store_true",
+        help="After ingestion completes, enqueue deferred video assets for categories that are now enabled.",
     )
     parser.add_argument(
         "--sitemap-max-documents",
@@ -322,6 +337,8 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
         config.sitemap_max_urls_per_document, getattr(args, "sitemap_max_urls_per_document", None)
     )
     config.jobs_file_provided = args.jobs_file is not None
+    config.video.enabled_categories = _parse_category_slugs(getattr(args, "video_enabled_categories", None))
+    config.video.process_pending = bool(getattr(args, "process_pending_videos", False))
 
     if site.slug == "thanhnien":
         config.thanhnien.selected_slugs = _parse_thanhnien_categories(getattr(args, "thanhnien_categories", None))
@@ -581,6 +598,85 @@ def _enqueue_asset_downloads(
     LOGGER.info("Queued %d assets for article %s", len(assets), article_id)
 
 
+def _process_pending_video_assets(
+    config: IngestConfig,
+    site: SiteDefinition,
+    session_factory,
+    *,
+    use_celery_playwright: bool,
+) -> None:
+    enabled_keys = config.video.categories_key_set()
+    with session_factory() as session:
+        query = session.query(PendingVideoAsset).filter(PendingVideoAsset.site_slug == site.slug)
+        query = query.filter(PendingVideoAsset.enqueued_at.is_(None))
+        if enabled_keys:
+            allowed_list = list(enabled_keys)
+            query = query.filter(
+                or_(
+                    PendingVideoAsset.category_key.in_(allowed_list),
+                    PendingVideoAsset.ingest_category_slug.in_(allowed_list),
+                )
+            )
+        pending_records: list[PendingVideoAsset] = query.order_by(PendingVideoAsset.deferred_at.asc()).all()
+
+    if not pending_records:
+        LOGGER.info("No deferred video assets awaiting download for site %s", site.slug)
+        return
+
+    grouped: dict[str, list[PendingVideoAsset]] = {}
+    for record in pending_records:
+        article_key = str(record.article_id)
+        grouped.setdefault(article_key, []).append(record)
+
+    LOGGER.info(
+        "Processing %d deferred video asset groups for site %s",
+        len(grouped),
+        site.slug,
+    )
+
+    for article_id, records in grouped.items():
+        records.sort(key=lambda item: item.sequence_number)
+        article_url = records[0].article_url
+        assets = [
+            ParsedAsset(
+                source_url=item.source_url,
+                asset_type=AssetType.VIDEO,
+                sequence=item.sequence_number,
+                caption=None,
+                referrer=item.referrer or article_url,
+            )
+            for item in records
+        ]
+
+        try:
+            _enqueue_asset_downloads(
+                config,
+                site,
+                article_id,
+                article_url,
+                assets,
+                use_celery_playwright=use_celery_playwright,
+            )
+        except Exception:  # pragma: no cover - defensive guard
+            LOGGER.exception(
+                "Failed to enqueue deferred videos for article %s (site=%s)",
+                article_id,
+                site.slug,
+            )
+            continue
+
+        queued_ids = [record.id for record in records]
+        timestamp = datetime.utcnow()
+        with session_factory() as session:
+            session.query(PendingVideoAsset).filter(
+                PendingVideoAsset.id.in_(queued_ids)
+            ).update(
+                {"enqueued_at": timestamp},
+                synchronize_session=False,
+            )
+            session.commit()
+
+
 def _process_job(
     job: ArticleJob,
     *,
@@ -613,9 +709,26 @@ def _process_job(
         try:
             html, response = fetcher.fetch_html(job.url)
             parsed = parser_impl.parse(job.url, html)
+            if job.category_slug and not parsed.category_id:
+                parsed.category_id = job.category_slug
             for asset in parsed.assets:
                 if not asset.referrer:
                     asset.referrer = job.url
+            deferred_videos: list[ParsedAsset] = []
+            if config.video.enabled_categories and not config.video.category_allowed(
+                job.category_slug,
+                parsed.category_id,
+                parsed.category_name,
+            ):
+                deferred_videos = [asset for asset in parsed.assets if asset.asset_type == AssetType.VIDEO]
+                if deferred_videos:
+                    parsed.assets = [asset for asset in parsed.assets if asset.asset_type != AssetType.VIDEO]
+                    LOGGER.info(
+                        "Deferring %d video assets for article %s (category=%s) due to category policy",
+                        len(deferred_videos),
+                        job.url,
+                        parsed.category_id or parsed.category_name or "unknown",
+                    )
             fetch_metadata = {
                 "status_code": response.status_code,
                 "sitemap_url": job.sitemap_url,
@@ -624,11 +737,28 @@ def _process_job(
             if resolver:
                 _update_video_assets_with_playwright(resolver, job.url, parsed.assets)
 
-            result = persistence.upsert_metadata(parsed, site.slug, fetch_metadata)
+            result = persistence.upsert_metadata(
+                parsed,
+                site.slug,
+                fetch_metadata=fetch_metadata,
+                ingest_category_slug=job.category_slug,
+            )
             article_id = result.article_id
 
             if config.raw_html_cache_enabled:
                 persist_raw_html(config, article_id, html)
+
+            if deferred_videos:
+                persistence.save_deferred_video_assets(
+                    article_id=article_id,
+                    site_slug=site.slug,
+                    article_url=job.url,
+                    category_id=parsed.category_id or job.category_slug,
+                    category_name=parsed.category_name,
+                    ingest_category_slug=job.category_slug,
+                    deferred_assets=deferred_videos,
+                    reason="category_not_enabled",
+                )
 
             _enqueue_asset_downloads(
                 config,
@@ -777,6 +907,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         job_loader.stats.skipped_existing + job_loader.stats.skipped_invalid + job_loader.stats.skipped_duplicate,
     )
 
+    if config.video.process_pending:
+        _process_pending_video_assets(
+            config,
+            site,
+            SessionLocal,
+            use_celery_playwright=use_celery_playwright,
+        )
+
     return 0 if stats.failed == 0 else 1
 
 
@@ -788,6 +926,7 @@ __all__ = [
     "persist_raw_html",
     "_build_task_payload",
     "_enqueue_asset_downloads",
+    "_process_pending_video_assets",
     "_record_fetch_failure",
     "_update_video_assets_with_playwright",
 ]

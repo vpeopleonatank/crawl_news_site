@@ -34,6 +34,7 @@ class ArticleJob:
     lastmod: str | None
     sitemap_url: str | None
     image_url: str | None
+    category_slug: str | None = None
 
 
 @dataclass(slots=True)
@@ -165,7 +166,7 @@ class NldCategoryLoader:
         if self._include_landing_page:
             landing_html = self._fetch_html(client, category.normalized_landing_url())
             if landing_html:
-                yield from self._emit_jobs_from_html(landing_html)
+                yield from self._emit_jobs_from_html(landing_html, category_slug=category.slug)
 
         page = 1
         consecutive_empty_pages = 0
@@ -765,7 +766,7 @@ class ThanhnienCategoryLoader:
         if self._include_landing_page:
             landing_html = self._fetch_html(client, category.normalized_landing_url())
             if landing_html:
-                yield from self._emit_jobs_from_html(landing_html)
+                yield from self._emit_jobs_from_html(landing_html, category_slug=category.slug)
 
         page = 1
         consecutive_empty_pages = 0
@@ -783,7 +784,7 @@ class ThanhnienCategoryLoader:
                 continue
 
             emitted_on_page = False
-            for job in self._emit_jobs_from_html(html):
+            for job in self._emit_jobs_from_html(html, category_slug=category.slug):
                 emitted_on_page = True
                 yield job
 
@@ -855,7 +856,7 @@ class ThanhnienCategoryLoader:
         delay = self._fetch_retry_backoff * (2 ** attempt)
         time.sleep(delay)
 
-    def _emit_jobs_from_html(self, html: str) -> Iterator[ArticleJob]:
+    def _emit_jobs_from_html(self, html: str, *, category_slug: str | None = None) -> Iterator[ArticleJob]:
         for url in self._extract_article_urls(html):
             self.stats.total += 1
 
@@ -868,7 +869,7 @@ class ThanhnienCategoryLoader:
                 self.stats.skipped_existing += 1
                 continue
 
-            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None)
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None, category_slug=category_slug)
             self.stats.emitted += 1
             yield job
 
