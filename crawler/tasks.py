@@ -21,7 +21,7 @@ from .assets import (
 from .celery_app import celery_app
 from .config import IngestConfig, ProxyConfig, TimeoutConfig
 from .persistence import ArticlePersistence, ArticlePersistenceError
-from .parsers import AssetType
+from .parsers import AssetType, ParsedAsset
 from .playwright_support import PlaywrightVideoResolverError
 from .sites import get_site_definition
 from .storage import StorageMonitor, build_storage_notifier
@@ -145,6 +145,52 @@ def _session_factory(db_url: str):
     return sessionmaker(bind=engine)
 
 
+def _retry_exhausted(task: Task) -> bool:
+    max_retries = task.max_retries
+    if max_retries is None:
+        max_retries = task.app.conf.get("task_default_max_retries")
+    if max_retries in (None, -1):
+        return False
+    try:
+        max_retries_int = int(max_retries)
+    except (TypeError, ValueError):
+        return False
+    return task.request.retries >= max_retries_int
+
+
+def _record_failed_media_download(
+    job: Mapping[str, Any],
+    assets: Sequence[ParsedAsset],
+    persistence: ArticlePersistence | None,
+    exc: Exception,
+) -> None:
+    if persistence is None:
+        return
+
+    article_id = job.get("article_id")
+    if not article_id:
+        return
+
+    site_slug = str(job.get("site") or "unknown")
+    article_url = str(job.get("article_url") or "")
+    failure_reason = str(exc)
+    error_type = type(exc).__name__
+
+    try:
+        persistence.record_failed_media_downloads(
+            str(article_id),
+            site_slug,
+            article_url,
+            assets,
+            failure_reason=failure_reason,
+            error_type=error_type,
+        )
+    except ArticlePersistenceError:
+        LOGGER.exception(
+            "Failed to record media download failure for article %s", article_id
+        )
+
+
 @celery_app.task(name="crawler.resolve_video_assets", bind=True, autoretry_for=(Exception,), retry_backoff=True)
 def resolve_video_assets_task(self: Task, job: Mapping[str, Any]) -> Mapping[str, Any]:
     article_id = str(job["article_id"])
@@ -215,23 +261,28 @@ def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
         LOGGER.info("No assets to download for article %s", article_id)
         return {"status": "skipped", "reason": "no_assets"}
 
-    try:
-        config = _build_config(job["config"])
-        db_url = str(job["db_url"])
-        session_factory = _session_factory(db_url)
-        assets = assets_from_payload(assets_payload)
+    assets = assets_from_payload(assets_payload)
+    for asset in assets:
+        if not asset.referrer:
+            asset.referrer = job.get("article_url")
 
+    config = _build_config(job["config"])
+    db_url = str(job["db_url"])
+    session_factory = _session_factory(db_url)
+    persistence = ArticlePersistence(
+        session_factory=session_factory,
+        storage_root=config.storage_root,
+        storage_volume_name=config.storage_volume_name,
+        storage_volume_path=config.storage_volume_path,
+    )
+
+    try:
+        
         _ensure_storage_capacity(config, context=f"pre-download check for article {article_id}")
 
         with AssetManager(config) as manager:
             stored_assets = manager.download_assets(article_id, assets)
 
-        persistence = ArticlePersistence(
-            session_factory=session_factory,
-            storage_root=config.storage_root,
-            storage_volume_name=config.storage_volume_name,
-            storage_volume_path=config.storage_volume_path,
-        )
         persistence.persist_assets(article_id, stored_assets)
 
         _ensure_storage_capacity(config, context=f"post-download check for article {article_id}")
@@ -242,9 +293,13 @@ def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
         return {"status": "ok", "assets": len(stored_assets)}
     except (AssetDownloadError, ArticlePersistenceError) as exc:
         LOGGER.exception("Download task failed for article %s", article_id)
+        if _retry_exhausted(self):
+            _record_failed_media_download(job, assets, persistence, exc)
+            raise
         raise self.retry(exc=exc)
     except Exception as exc:  # pragma: no cover - unexpected failure
         LOGGER.exception("Unexpected error in download task for article %s", article_id)
+        _record_failed_media_download(job, assets, persistence, exc)
         raise exc
 
 

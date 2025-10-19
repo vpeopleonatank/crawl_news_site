@@ -7,7 +7,7 @@ from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 from crawler.config import IngestConfig
-from crawler.ingest import _process_pending_video_assets
+from crawler.ingest import _process_failed_media_downloads, _process_pending_video_assets
 from crawler.assets import StoredAsset
 from crawler.parsers import AssetType, ParsedAsset
 from crawler.persistence import ArticlePersistence
@@ -178,8 +178,124 @@ class VideoPolicyTests(TestCase):
 
         self.assertEqual(len(article.images), 1)
         self.assertEqual(len(article.videos), 0)
-        self.assertEqual(session.query.call_count, 1)
+        self.assertEqual(session.query.call_count, 2)
         session.commit.assert_called_once()
+
+    def test_record_failed_media_downloads_creates_and_updates(self) -> None:
+        article_id = uuid.uuid4()
+        session = MagicMock()
+        query = MagicMock()
+        query.filter.return_value = []
+        session.query.return_value = query
+        session_factory = MagicMock(return_value=_SessionContext(session))
+
+        persistence = ArticlePersistence(
+            session_factory=session_factory,
+            storage_root=Path("/tmp/storage"),
+        )
+
+        asset = ParsedAsset(
+            source_url="https://example.com/image.jpg",
+            asset_type=AssetType.IMAGE,
+            sequence=1,
+        )
+
+        persistence.record_failed_media_downloads(
+            article_id=str(article_id),
+            site_slug="thanhnien",
+            article_url="https://example.com/article",
+            assets=[asset],
+            failure_reason="download failed",
+            error_type="AssetDownloadError",
+        )
+
+        session.add.assert_called_once()
+        added = session.add.call_args[0][0]
+        self.assertEqual(added.media_type, AssetType.IMAGE.value)
+        self.assertEqual(added.failure_count, 1)
+        session.commit.assert_called_once()
+
+        # Simulate update path
+        existing = SimpleNamespace(
+            media_type=AssetType.IMAGE.value,
+            sequence_number=1,
+            source_url="https://example.com/image.jpg",
+            referrer="https://example.com/article",
+            failure_reason="stale",
+            failure_count=1,
+            first_failed_at=None,
+            last_failed_at=None,
+            status="queued",
+            resolved_at=None,
+            article_url="https://example.com/article",
+        )
+        session.reset_mock()
+        query2 = MagicMock()
+        query2.filter.return_value = [existing]
+        session.query.return_value = query2
+
+        persistence.record_failed_media_downloads(
+            article_id=str(article_id),
+            site_slug="thanhnien",
+            article_url="https://example.com/article",
+            assets=[asset],
+            failure_reason="download failed again",
+            error_type="AssetDownloadError",
+        )
+
+        session.add.assert_not_called()
+        self.assertEqual(existing.failure_count, 2)
+        self.assertEqual(existing.status, "pending")
+        session.commit.assert_called_once()
+
+    def test_process_failed_media_downloads_enqueues_and_marks_records(self) -> None:
+        failed_id = uuid.uuid4()
+        article_id = uuid.uuid4()
+        failed_record = SimpleNamespace(
+            id=failed_id,
+            article_id=article_id,
+            site_slug="thanhnien",
+            article_url="https://example.com/article",
+            media_type=AssetType.IMAGE.value,
+            sequence_number=1,
+            source_url="https://example.com/img.jpg",
+            referrer=None,
+        )
+
+        fetch_session = MagicMock()
+        fetch_query = MagicMock()
+        fetch_query.filter.return_value = fetch_query
+        fetch_query.order_by.return_value = fetch_query
+        fetch_query.all.return_value = [failed_record]
+        fetch_session.query.return_value = fetch_query
+
+        update_session = MagicMock()
+        update_query = MagicMock()
+        update_filter = MagicMock()
+        update_query.filter.return_value = update_filter
+        update_session.query.return_value = update_query
+
+        session_factory = MagicMock(side_effect=[_SessionContext(fetch_session), _SessionContext(update_session)])
+
+        config = IngestConfig()
+        site = SimpleNamespace(slug="thanhnien", playwright_resolver_factory=None)
+
+        with patch("crawler.ingest._enqueue_asset_downloads") as enqueue_mock:
+            _process_failed_media_downloads(
+                config=config,
+                site=site,
+                session_factory=session_factory,
+                use_celery_playwright=False,
+            )
+
+        enqueue_mock.assert_called_once()
+        args, _ = enqueue_mock.call_args
+        self.assertEqual(args[2], str(article_id))
+        assets = args[4]
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0].asset_type, AssetType.IMAGE)
+        update_filter.update.assert_called_once()
+        update_session.commit.assert_called_once()
 
     def test_persist_assets_only_removes_pending_sequences_for_downloaded_videos(self) -> None:
         article_id = uuid.uuid4()
@@ -198,8 +314,12 @@ class VideoPolicyTests(TestCase):
         pending_filter = MagicMock()
         pending_query.filter.return_value = pending_filter
 
+        failed_query = MagicMock()
+        failed_filter = MagicMock()
+        failed_query.filter.return_value = failed_filter
+
         session = MagicMock()
-        session.query.side_effect = [article_query, pending_query]
+        session.query.side_effect = [article_query, pending_query, failed_query]
 
         session_factory = MagicMock(return_value=_SessionContext(session))
 
@@ -228,3 +348,4 @@ class VideoPolicyTests(TestCase):
         self.assertEqual(len(article.videos), 1)
         pending_query.filter.assert_called_once()
         pending_filter.delete.assert_called_once_with(synchronize_session=False)
+        failed_filter.update.assert_called_once()

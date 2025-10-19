@@ -52,6 +52,12 @@ class Article(Base):
         cascade="all, delete-orphan",
         order_by="PendingVideoAsset.sequence_number"
     )
+    failed_downloads = relationship(
+        "FailedMediaDownload",
+        back_populates="article",
+        cascade="all, delete-orphan",
+        order_by="FailedMediaDownload.sequence_number"
+    )
     
     def __repr__(self):
         return (
@@ -130,6 +136,46 @@ class PendingVideoAsset(Base):
         return (
             f"<PendingVideoAsset(article_id={self.article_id}, sequence={self.sequence_number}, "
             f"source_url='{self.source_url[:50]}...')>"
+        )
+
+
+class FailedMediaDownload(Base):
+    __tablename__ = 'failed_media_downloads'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid7)
+    article_id = Column(UUID(as_uuid=True), ForeignKey('articles.id', ondelete='CASCADE'), nullable=False)
+    site_slug = Column(String(100), nullable=False, index=True)
+    article_url = Column(String(2000), nullable=False)
+    media_type = Column(String(20), nullable=False, index=True)
+    sequence_number = Column(Integer, nullable=False)
+    source_url = Column(String(2000), nullable=False)
+    referrer = Column(String(2000))
+    failure_reason = Column(String(500))
+    failure_count = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text)
+    last_error_type = Column(String(200))
+    first_failed_at = Column(DateTime, default=func.now(), nullable=False)
+    last_failed_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    last_enqueued_at = Column(DateTime)
+    resolved_at = Column(DateTime)
+    status = Column(String(50), nullable=False, default="pending", index=True)
+
+    article = relationship("Article", back_populates="failed_downloads")
+
+    __table_args__ = (
+        Index(
+            'ix_failed_media_article_seq_type',
+            'article_id',
+            'media_type',
+            'sequence_number',
+            unique=True,
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<FailedMediaDownload(article_id={self.article_id}, media={self.media_type}, sequence={self.sequence_number}, "
+            f"source_url='{(self.source_url or '')[:50]}...')>"
         )
 
 

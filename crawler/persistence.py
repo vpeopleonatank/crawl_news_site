@@ -10,7 +10,14 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from models import Article, ArticleImage, ArticleVideo, PendingVideoAsset, generate_uuid7
+from models import (
+    Article,
+    ArticleImage,
+    ArticleVideo,
+    FailedMediaDownload,
+    PendingVideoAsset,
+    generate_uuid7,
+)
 
 from .parsers import AssetType, ParsedArticle, ParsedAsset
 from .assets import StoredAsset
@@ -111,6 +118,7 @@ class ArticlePersistence:
                 new_images: list[ArticleImage] = []
                 new_videos: list[ArticleVideo] = []
                 downloaded_video_sequences: set[int] = set()
+                downloaded_image_sequences: set[int] = set()
 
                 for stored in stored_assets:
                     stored_ref = self._format_asset_reference(stored.path)
@@ -121,6 +129,7 @@ class ArticlePersistence:
                                 sequence_number=stored.source.sequence,
                             )
                         )
+                        downloaded_image_sequences.add(stored.source.sequence)
                     else:
                         new_videos.append(
                             ArticleVideo(
@@ -138,11 +147,39 @@ class ArticlePersistence:
                     article.videos.clear()
                     article.videos.extend(new_videos)
 
+                timestamp = datetime.utcnow()
+
                 if downloaded_video_sequences:
                     session.query(PendingVideoAsset).filter(
                         PendingVideoAsset.article_id == article_uuid,
                         PendingVideoAsset.sequence_number.in_(list(downloaded_video_sequences)),
                     ).delete(synchronize_session=False)
+                    session.query(FailedMediaDownload).filter(
+                        FailedMediaDownload.article_id == article_uuid,
+                        FailedMediaDownload.media_type == AssetType.VIDEO.value,
+                        FailedMediaDownload.sequence_number.in_(list(downloaded_video_sequences)),
+                        FailedMediaDownload.resolved_at.is_(None),
+                    ).update(
+                        {
+                            "status": "resolved",
+                            "resolved_at": timestamp,
+                        },
+                        synchronize_session=False,
+                    )
+
+                if downloaded_image_sequences:
+                    session.query(FailedMediaDownload).filter(
+                        FailedMediaDownload.article_id == article_uuid,
+                        FailedMediaDownload.media_type == AssetType.IMAGE.value,
+                        FailedMediaDownload.sequence_number.in_(list(downloaded_image_sequences)),
+                        FailedMediaDownload.resolved_at.is_(None),
+                    ).update(
+                        {
+                            "status": "resolved",
+                            "resolved_at": timestamp,
+                        },
+                        synchronize_session=False,
+                    )
                 session.commit()
         except Exception as exc:  # pragma: no cover - failure path
             raise ArticlePersistenceError(str(exc)) from exc
@@ -232,6 +269,72 @@ class ArticlePersistence:
                                 referrer=referrer,
                                 deferred_reason=reason,
                                 deferred_at=timestamp,
+                            )
+                        )
+
+                session.commit()
+        except Exception as exc:  # pragma: no cover - failure path
+            raise ArticlePersistenceError(str(exc)) from exc
+
+    def record_failed_media_downloads(
+        self,
+        article_id: str,
+        site_slug: str,
+        article_url: str,
+        assets: Iterable[ParsedAsset],
+        *,
+        failure_reason: str,
+        error_type: Optional[str] = None,
+    ) -> None:
+        assets_list = list(assets)
+        if not assets_list:
+            return
+
+        try:
+            with self._session_factory() as session:
+                article_uuid = UUID(article_id)
+                existing_records = {
+                    (record.media_type, record.sequence_number): record
+                    for record in session.query(FailedMediaDownload)
+                    .filter(FailedMediaDownload.article_id == article_uuid)
+                }
+
+                timestamp = datetime.utcnow()
+                for asset in assets_list:
+                    media_type = asset.asset_type.value
+                    key = (media_type, asset.sequence)
+                    referrer = asset.referrer or article_url
+                    record = existing_records.get(key)
+                    if record:
+                        record.source_url = asset.source_url
+                        record.referrer = referrer
+                        record.failure_reason = failure_reason
+                        record.article_url = article_url
+                        record.failure_count = (record.failure_count or 0) + 1
+                        record.last_error = failure_reason
+                        record.last_error_type = error_type
+                        if record.first_failed_at is None:
+                            record.first_failed_at = timestamp
+                        record.last_failed_at = timestamp
+                        record.status = "pending"
+                        record.resolved_at = None
+                    else:
+                        session.add(
+                            FailedMediaDownload(
+                                article_id=article_uuid,
+                                site_slug=site_slug,
+                                article_url=article_url,
+                                media_type=media_type,
+                                sequence_number=asset.sequence,
+                                source_url=asset.source_url,
+                                referrer=referrer,
+                                failure_reason=failure_reason,
+                                failure_count=1,
+                                last_error=failure_reason,
+                                last_error_type=error_type,
+                                first_failed_at=timestamp,
+                                last_failed_at=timestamp,
+                                status="pending",
                             )
                         )
 

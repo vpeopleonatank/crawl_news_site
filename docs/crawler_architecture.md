@@ -812,6 +812,15 @@ Filesystem:
     --use-playwright
   ```
 - Download completion removes entries from `pending_video_assets`, keeping the backlog tidy
+- Assets that exhaust all Celery retries land in `failed_media_downloads`; requeue them later without re-crawling HTML via:
+  ```bash
+  python -m crawler.process_failed_downloads \
+    --site thanhnien \
+    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+    --storage-root /app/storage \
+    --use-playwright
+  ```
+  Successful downloads automatically mark the corresponding records as resolved.
 
 ---
 

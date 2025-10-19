@@ -26,7 +26,7 @@ from .playwright_support import PlaywrightVideoResolverError
 from .sites import SiteDefinition, get_site_definition, list_sites
 from .storage import StorageMonitor, build_storage_notifier, load_storage_settings
 from .tasks import download_assets_task, resolve_video_assets_task
-from models import Base, PendingVideoAsset
+from models import Base, FailedMediaDownload, PendingVideoAsset
 
 LOGGER = logging.getLogger(__name__)
 _FETCH_FAILURE_LOG = "fetch_failures.ndjson"
@@ -677,6 +677,96 @@ def _process_pending_video_assets(
             session.commit()
 
 
+def _process_failed_media_downloads(
+    config: IngestConfig,
+    site: SiteDefinition,
+    session_factory,
+    *,
+    use_celery_playwright: bool,
+) -> None:
+    with session_factory() as session:
+        pending_records: list[FailedMediaDownload] = (
+            session.query(FailedMediaDownload)
+            .filter(FailedMediaDownload.site_slug == site.slug)
+            .filter(FailedMediaDownload.resolved_at.is_(None))
+            .order_by(FailedMediaDownload.last_failed_at.asc())
+            .all()
+        )
+
+    if not pending_records:
+        LOGGER.info("No failed media downloads awaiting retry for site %s", site.slug)
+        return
+
+    grouped: dict[str, list[FailedMediaDownload]] = {}
+    for record in pending_records:
+        grouped.setdefault(str(record.article_id), []).append(record)
+
+    LOGGER.info(
+        "Re-enqueueing %d failed media groups for site %s",
+        len(grouped),
+        site.slug,
+    )
+
+    for article_id, records in grouped.items():
+        records.sort(key=lambda item: (item.media_type, item.sequence_number))
+        article_url = records[0].article_url
+        assets: list[ParsedAsset] = []
+        for item in records:
+            try:
+                media_type = AssetType(item.media_type)
+            except ValueError:
+                LOGGER.warning(
+                    "Skipping failed media record %s with unknown type %s",
+                    item.id,
+                    item.media_type,
+                )
+                continue
+            assets.append(
+                ParsedAsset(
+                    source_url=item.source_url,
+                    asset_type=media_type,
+                    sequence=item.sequence_number,
+                    referrer=item.referrer or article_url,
+                )
+            )
+
+        if not assets:
+            continue
+
+        try:
+            _enqueue_asset_downloads(
+                config,
+                site,
+                article_id,
+                article_url,
+                assets,
+                use_celery_playwright=use_celery_playwright and any(
+                    asset.asset_type == AssetType.VIDEO for asset in assets
+                ),
+            )
+        except Exception:  # pragma: no cover - defensive guard
+            LOGGER.exception(
+                "Failed to enqueue retry for article %s (site=%s)",
+                article_id,
+                site.slug,
+            )
+            continue
+
+        queued_ids = [record.id for record in records]
+        timestamp = datetime.utcnow()
+        with session_factory() as session:
+            session.query(FailedMediaDownload).filter(
+                FailedMediaDownload.id.in_(queued_ids)
+            ).update(
+                {
+                    "last_enqueued_at": timestamp,
+                    "status": "queued",
+                },
+                synchronize_session=False,
+            )
+            session.commit()
+
+
 def _process_job(
     job: ArticleJob,
     *,
@@ -927,6 +1017,7 @@ __all__ = [
     "_build_task_payload",
     "_enqueue_asset_downloads",
     "_process_pending_video_assets",
+    "_process_failed_media_downloads",
     "_record_fetch_failure",
     "_update_video_assets_with_playwright",
 ]
