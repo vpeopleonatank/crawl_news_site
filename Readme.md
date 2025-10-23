@@ -47,6 +47,7 @@ docker compose down -v
 2. **RabbitMQ 3 management** - Message broker on port 5672 with UI at http://localhost:15672 (crawler / crawler_password)
 3. **pgAdmin** - Web UI at http://localhost:5050 (admin@admin.com / admin)
 4. **Test App** - Automatically runs tests when started
+5. **Flower** - Celery monitoring at http://localhost:5555 (configurable via `FLOWER_PORT`)
 
 **The test script validates:**
 - ✅ UUIDv7 generation
@@ -65,6 +66,18 @@ docker compose down -v
 - All of the above are parametrised via `.env`; copy `.env.sample` and adjust values before running
 
 RabbitMQ queues stay durable, and task results persist in PostgreSQL so outstanding work resumes after restarts.
+
+Monitor Celery workers and task states with Flower:
+
+```bash
+# Launch Flower alongside the rest of the stack
+docker compose up flower
+
+# Or start everything (including Flower) in the background
+docker compose up -d
+```
+
+Then visit http://localhost:5555 (or the port defined in `FLOWER_PORT`) to inspect queues, tasks, and worker heartbeats in real time.
 
 **To connect to pgAdmin:**
 1. Open http://localhost:5050

@@ -4,4 +4,5 @@ uuid-utils==0.11.1
 httpx==0.28.1
 beautifulsoup4==4.14.2
 celery==5.3.6
+flower==2.0.1
 playwright==1.55.0

@@ -86,6 +86,32 @@ services:
     networks:
       - crawl_network
 
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crawl_flower
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      CRAWLER_DATABASE_URL: ${CRAWLER_DATABASE_URL:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      CRAWLER_CELERY_BROKER_URL: ${CRAWLER_CELERY_BROKER_URL:-amqp://crawler:crawler_password@rabbitmq:5672//}
+      CRAWLER_CELERY_RESULT_BACKEND: ${CRAWLER_CELERY_RESULT_BACKEND:-db+postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    command: >
+      celery --app crawler.celery_app flower
+        --address=0.0.0.0
+        --port=5555
+    networks:
+      - crawl_network
+
 volumes:
   postgres_data:
   pgadmin_data:
