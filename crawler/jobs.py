@@ -1641,13 +1641,85 @@ class ZnewsCategoryLoader:
         return urls
 
 
-_DEFAULT_KENH14_CATEGORY_SLUGS: tuple[str, ...] = ("phap-luat",)
+_DEFAULT_KENH14_CATEGORY_SLUGS: tuple[str, ...] = (
+    "star",
+    "cine",
+    "musik",
+    "beauty-fashion",
+    "doi-song",
+    "tek-life",
+    "money-z",
+    "sport",
+    "an-quay-di",
+    "xa-hoi",
+    "suc-khoe",
+)
 _DEFAULT_KENH14_CATEGORIES: tuple[Kenh14CategoryDefinition, ...] = (
     Kenh14CategoryDefinition(
-        slug="phap-luat",
-        name="Pháp luật",
-        timeline_id=215195,
-        landing_url="https://kenh14.vn/xa-hoi/phap-luat.chn",
+        slug="star",
+        name="Star",
+        timeline_id=2151,
+        landing_url="https://kenh14.vn/star.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="cine",
+        name="Cine",
+        timeline_id=2152,
+        landing_url="https://kenh14.vn/cine.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="musik",
+        name="Musik",
+        timeline_id=2153,
+        landing_url="https://kenh14.vn/musik.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="beauty-fashion",
+        name="Beauty & Fashion",
+        timeline_id=215231,
+        landing_url="https://kenh14.vn/beauty-fashion.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="doi-song",
+        name="Đời sống",
+        timeline_id=2154,
+        landing_url="https://kenh14.vn/doi-song.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="tek-life",
+        name="Tek-Life",
+        timeline_id=21531,
+        landing_url="https://kenh14.vn/tek-life.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="money-z",
+        name="Money-Z",
+        timeline_id=215238,
+        landing_url="https://kenh14.vn/money-z.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="sport",
+        name="Sport",
+        timeline_id=215118,
+        landing_url="https://kenh14.vn/sport.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="an-quay-di",
+        name="Ăn - Quẩy - Đi",
+        timeline_id=215190,
+        landing_url="https://kenh14.vn/an-quay-di.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="xa-hoi",
+        name="Xã hội",
+        timeline_id=215142,
+        landing_url="https://kenh14.vn/xa-hoi.chn",
+    ),
+    Kenh14CategoryDefinition(
+        slug="suc-khoe",
+        name="Sức khỏe",
+        timeline_id=21579,
+        landing_url="https://kenh14.vn/suc-khoe.chn",
     ),
 )
 

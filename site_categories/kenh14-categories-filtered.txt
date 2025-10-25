@@ -1,0 +1,46 @@
+# Kenh14 People-Related Categories
+# Celebrity & Entertainment (star → subcategories)
+hoi-ban-than-showbiz
+sao-viet
+tv-show
+star-style
+hau-truong
+
+# Personalities & Lifestyle (doi-song → subcategory)
+nhan-vat
+
+# Youth & Education (hoc-duong → subcategories)
+du-hoc
+ban-tin-46
+
+# Society (xa-hoi → subcategories)
+phap-luat
+nong-tren-mang
+
+# General News
+tin-tuc
+
+# ============================================================
+# COMMAND 1: People-Related Categories (Run First)
+# ============================================================
+ docker compose run --rm test_app \
+   python -m crawler.ingest \
+     --site kenh14 \
+     --storage-root /app/storage \
+     --max-workers 4 \
+     --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
+     --kenh14-categories hoi-ban-than-showbiz,sao-viet,tv-show,star-style,hau-truong,nhan-vat,du-hoc,ban-tin-46,phap-luat,nong-tren-mang,tin-tuc \
+     --kenh14-max-pages 0
+
+# ============================================================
+# COMMAND 2: Remaining Categories (Run Later)
+# ============================================================
+# Includes: beauty/fashion, cinema, music, lifestyle, tech, sports, health, food/travel
+ docker compose run --rm test_app \
+   python -m crawler.ingest \
+     --site kenh14 \
+     --storage-root /app/storage \
+     --max-workers 4 \
+     --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
+     --kenh14-categories lam-dep,thoi-trang,mommy-mua-di,dep,phim-chieu-rap,phim-viet-nam,series-truyen-hinh,hoa-ngu-han-quoc,au-my,chau-a,viet-nam,chum-anh,kham-pha,an,quay,di,mommy-ez,house-n-home,metaverse,how-to,wow,2-mall,bong-da,pickleball,esports,song-xanh,khoe-dep,gioi-tinh,cac-benh,dinh-duong \
+     --kenh14-max-pages 0
