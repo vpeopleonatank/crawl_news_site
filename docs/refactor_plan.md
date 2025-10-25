@@ -8,6 +8,7 @@ This roadmap captures the current recommendations for improving maintainability 
 - `crawler/jobs.py:108` houses multiple job-loader implementations, HTTP helpers, and sitemap parsing utilities together, leading to duplicated pagination logic across Thanhnien, Nld, Kenh14, and PLO.
 - `crawler/assets.py:40` mixes download orchestration, URL normalization, HLS handling, checksum management, and Celery payload serialization, blurring module responsibilities.
 - `crawler/persistence.py:42` acts as a monolithic persistence layer handling metadata, assets, pending videos, and failure tracking without smaller repositories or seams for testing.
+- `crawler/storage.py:40` couples environment parsing, Telegram notifications, disk-usage monitoring, and CLI subcommands in a single ~500 line module, making targeted storage changes risky.
 - Contributor tooling lacks shared standards (`CONTRIBUTING.md`, formatter/linter configuration), slowing onboarding and code review.
 
 ## Refactor Phases
@@ -17,7 +18,7 @@ This roadmap captures the current recommendations for improving maintainability 
   - `crawler/cli.py` (argument parsing + logging setup).
   - `crawler/pipeline/runner.py` (orchestrates fetch → parse → persist).
   - `crawler/pipeline/services/` for storage monitoring, retry processors, and queue management.
-- Move `_process_job`, `_process_pending_video_assets`, and `_process_failed_media_downloads` into dedicated service classes with unit tests.
+- Move `_process_job`, `_process_pending_video_assets`, and `_process_failed_media_downloads` into dedicated service classes with unit tests so the `process_pending_videos` and `process_failed_downloads` CLIs no longer reach into ingestion internals.
 
 ### Phase 2: Job Loader Modularisation
 - Create `crawler/job_loaders/` package.
@@ -30,6 +31,7 @@ This roadmap captures the current recommendations for improving maintainability 
   - `url_normalizer.py` (embed/HLS normalization utilities).
   - `payload_codec.py` (serialize/deserialize Celery payloads).
 - Introduce `AssetDownloader` interface so Celery tasks and synchronous ingestion reuse the same contract.
+- Extract `crawler/storage.py` into focused modules (`config_loader.py`, `monitor.py`, `cli.py`) to isolate environment parsing, pause/notify logic, and command-line utilities.
 
 ### Phase 4: Persistence Re-architecture
 - Replace `ArticlePersistence` with smaller repositories:
@@ -48,3 +50,4 @@ This roadmap captures the current recommendations for improving maintainability 
 1. Align the team on phase sequencing (suggest starting with ingestion layering).
 2. Prototype the pipeline/service split on a branch, validating API boundaries before migrating other modules.
 3. Draft contributor documentation in parallel so structure changes launch alongside clear guidance.
+4. Capture desired storage responsibilities and break down the `crawler/storage.py` split before wiring ingestion to the new monitor module.
