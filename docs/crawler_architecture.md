@@ -1,7 +1,7 @@
 # Crawler System Processing Architecture
 
 ## Overview
-Multi-site news article ingestion pipeline with async media processing, supporting Vietnamese news sites (Thanhnien.vn). Built on SQLAlchemy 2.0, Celery 5.3, PostgreSQL 16, and RabbitMQ 3.13.
+Multi-site news article ingestion pipeline with async media processing, supporting Vietnamese news sites (Thanhnien.vn). Built on SQLAlchemy 2.0, Celery 5.3, PgBouncer 1.x, PostgreSQL 16, and RabbitMQ 3.13.
 9-Stage Processing Pipeline:
   1. Job Loading - NDJSON parsing with deduplication
   2. HTTP Fetch - Smart retry with proxy rotation
@@ -511,6 +511,7 @@ CLI Arguments (--db-url, --max-workers, --proxy, ...)
 - `CRAWLER_CELERY_BROKER_URL`: RabbitMQ AMQP URL
 - `CRAWLER_CELERY_RESULT_BACKEND`: PostgreSQL result backend
 - `CRAWLER_CELERY_TASK_ALWAYS_EAGER`: Sync/async mode toggle
+- `DATABASE_URL_DIRECT` / `CRAWLER_DATABASE_URL_DIRECT`: Optional overrides to bypass PgBouncer for migrations
 
 ---
 
@@ -523,6 +524,12 @@ services:
     ports: ["5433:5432"]
     volumes: [postgres_data]
     credentials: crawl_user / crawl_password
+
+  pgbouncer:
+    build: ./pgbouncer
+    ports: ["6432:6432"]
+    volumes: [pgbouncer_logs]
+    depends_on: [postgres]
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -537,7 +544,7 @@ services:
 
   test_app:
     build: .
-    depends_on: [postgres, rabbitmq]
+    depends_on: [postgres, pgbouncer, rabbitmq]
     volumes:
       - ./storage:/app/storage  # bind-mount for assets
 ```
@@ -624,7 +631,7 @@ RETURNING id;
 ```python
 task_payload = {
   "article_id": "01936a7f-1234-7000-abcd-0123456789ab",
-  "db_url": "postgresql://crawl_user:crawl_password@postgres:5432/crawl_db",
+  "db_url": "postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db",
   "article_url": "https://thanhnien.vn/kham-pha-xu-so-than-tien-post1234567.html",
   "site": "thanhnien",
   "assets": [
@@ -806,7 +813,7 @@ Filesystem:
   ```bash
   python -m crawler.process_pending_videos \
     --site thanhnien \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
     --storage-root /app/storage \
     --video-enabled-categories sports,magazine \
     --use-playwright
@@ -816,7 +823,7 @@ Filesystem:
   ```bash
   python -m crawler.process_failed_downloads \
     --site thanhnien \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
     --storage-root /app/storage \
     --use-playwright
   ```

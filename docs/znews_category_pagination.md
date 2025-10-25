@@ -97,7 +97,7 @@ Example:
 ```bash
 python -m crawler.ingest \
   --site znews \
-  --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+  --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
   --storage-root /app/storage \
   --znews-use-categories \
   --znews-categories phap-luat,doi-song \

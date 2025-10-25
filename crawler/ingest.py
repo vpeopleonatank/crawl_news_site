@@ -891,6 +891,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not config.db_url:
         parser.error("--db-url is required")
 
+    # Default DSNs route through PgBouncer; override --db-url for direct Postgres access when needed.
     engine = create_engine(config.db_url)
     Base.metadata.create_all(engine)  # ensure required tables exist before queries
     SessionLocal = sessionmaker(bind=engine)

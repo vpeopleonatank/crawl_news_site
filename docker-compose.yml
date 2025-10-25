@@ -23,6 +23,45 @@ services:
     networks:
       - crawl_network
 
+  pgbouncer:
+    build:
+      context: ./pgbouncer
+    container_name: crawl_pgbouncer
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-crawl_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crawl_password}
+      POSTGRES_DB: ${POSTGRES_DB:-crawl_db}
+      PGBOUNCER_PORT: ${PGBOUNCER_PORT:-6432}
+      PGBOUNCER_POOL_MODE: ${PGBOUNCER_POOL_MODE:-transaction}
+      PGBOUNCER_MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
+      PGBOUNCER_DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      PGBOUNCER_RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE:-5}
+      PGBOUNCER_RESERVE_POOL_TIMEOUT: ${PGBOUNCER_RESERVE_POOL_TIMEOUT:-5}
+      PGBOUNCER_SERVER_LIFETIME: ${PGBOUNCER_SERVER_LIFETIME:-900}
+      PGBOUNCER_SERVER_IDLE_TIMEOUT: ${PGBOUNCER_SERVER_IDLE_TIMEOUT:-300}
+      PGBOUNCER_STATS_PERIOD: ${PGBOUNCER_STATS_PERIOD:-60}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${HOST_PGBOUNCER_PORT:-6432}:6432"
+    volumes:
+      - pgbouncer_logs:/var/log/pgbouncer
+    networks:
+      - crawl_network
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -h localhost -p 6432 -U ${POSTGRES_USER:-crawl_user} -d ${POSTGRES_DB:-crawl_db}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: crawl_pgadmin
@@ -68,13 +107,18 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
-      CRAWLER_DATABASE_URL: ${CRAWLER_DATABASE_URL:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db}
+      DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      CRAWLER_DATABASE_URL: ${CRAWLER_DATABASE_URL:-postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db}
+      CRAWLER_DATABASE_URL_DIRECT: ${CRAWLER_DATABASE_URL_DIRECT:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
       CRAWLER_CELERY_BROKER_URL: ${CRAWLER_CELERY_BROKER_URL:-amqp://crawler:crawler_password@rabbitmq:5672//}
-      CRAWLER_CELERY_RESULT_BACKEND: ${CRAWLER_CELERY_RESULT_BACKEND:-db+postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      CRAWLER_CELERY_RESULT_BACKEND: ${CRAWLER_CELERY_RESULT_BACKEND:-db+postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db}
+      CRAWLER_CELERY_RESULT_BACKEND_DIRECT: ${CRAWLER_CELERY_RESULT_BACKEND_DIRECT:-db+postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
       CRAWLER_CELERY_TASK_ALWAYS_EAGER: ${CRAWLER_CELERY_TASK_ALWAYS_EAGER:-False}
     depends_on:
       postgres:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
@@ -94,14 +138,19 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
-      CRAWLER_DATABASE_URL: ${CRAWLER_DATABASE_URL:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db}
+      DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      CRAWLER_DATABASE_URL: ${CRAWLER_DATABASE_URL:-postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db}
+      CRAWLER_DATABASE_URL_DIRECT: ${CRAWLER_DATABASE_URL_DIRECT:-postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
       CRAWLER_CELERY_BROKER_URL: ${CRAWLER_CELERY_BROKER_URL:-amqp://crawler:crawler_password@rabbitmq:5672//}
-      CRAWLER_CELERY_RESULT_BACKEND: ${CRAWLER_CELERY_RESULT_BACKEND:-db+postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
+      CRAWLER_CELERY_RESULT_BACKEND: ${CRAWLER_CELERY_RESULT_BACKEND:-db+postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db}
+      CRAWLER_CELERY_RESULT_BACKEND_DIRECT: ${CRAWLER_CELERY_RESULT_BACKEND_DIRECT:-db+postgresql://crawl_user:crawl_password@postgres:5432/crawl_db}
     depends_on:
       rabbitmq:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
     ports:
       - "${FLOWER_PORT:-5555}:5555"
@@ -116,6 +165,7 @@ volumes:
   postgres_data:
   pgadmin_data:
   rabbitmq_data:
+  pgbouncer_logs:
 
 networks:
   crawl_network:

@@ -79,11 +79,13 @@ class ThanhnienParser(ArticleParser):
         assets = []
         sequence = 1
         if content_container is not None:
-            for block in content_container.find_all(["figure", "div"], recursive=True):
+            for block in content_container.find_all(["figure", "div", "table"], recursive=True):
                 if block.name == "figure":
                     sequence = self._extract_figure_asset(block, assets, sequence)
                 elif block.name == "div":
                     sequence = self._extract_stream_asset(block, assets, sequence)
+                elif block.name == "table":
+                    sequence = self._extract_table_asset(block, assets, sequence)
 
         structured_assets = ensure_asset_sequence(assets)
 
@@ -238,6 +240,47 @@ class ThanhnienParser(ArticleParser):
                 asset_type=AssetType.VIDEO,
                 sequence=sequence,
                 caption=self._extract_stream_caption(block),
+            )
+        )
+        return sequence + 1
+
+    def _extract_table_asset(self, block: Tag, assets: list[ParsedAsset], sequence: int) -> int:
+        """Handle legacy table-based image blocks."""
+
+        img = block.find("img")
+        if img is None:
+            return sequence
+
+        source_url = self._normalize_media_url(
+            img.get("src") or img.get("data-src") or img.get("data-original")
+        )
+        if not source_url:
+            return sequence
+
+        caption: str | None = None
+        for sibling in img.next_siblings:
+            if isinstance(sibling, Tag):
+                caption = sibling.get_text(strip=True) or None
+                if caption:
+                    break
+
+        # Fall back to table text when no explicit caption sibling exists.
+        if caption is None:
+            text = block.get_text(strip=True)
+            caption = text or None
+
+        if caption:
+            # Avoid duplicating the article title or alt text as caption noise.
+            alt_text = (img.get("alt") or "").strip()
+            if caption == alt_text:
+                caption = None
+
+        assets.append(
+            ParsedAsset(
+                source_url=source_url,
+                asset_type=AssetType.IMAGE,
+                sequence=sequence,
+                caption=caption,
             )
         )
         return sequence + 1

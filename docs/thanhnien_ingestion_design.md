@@ -82,7 +82,7 @@
       --jobs-file data/thanhnien_jobs.ndjson \
       --storage-root storage \
       --max-workers 4 \
-      --db-url postgresql://crawl_user:crawl_password@localhost:5433/crawl_db \
+      --db-url postgresql://crawl_user:crawl_password@localhost:6432/crawl_db \
       --use-playwright
   ```
 - Orchestrates worker pool:
@@ -124,7 +124,7 @@
 - **Dry-run Mode** in CLI that performs fetch/parse but skips persistence, logging the results for manual inspection.
 - **Database Tests**: reuse existing docker-compose to spin up Postgres; run ingestion on a tiny fixture set to ensure tables populated correctly.
 - **Asset Tests**: use temporary directory and mocked HTTP responses (`httpx.MockTransport`) to validate file naming, checksum, byte counts, and error handling for empty/failed downloads.
-- **Model Smoke Test** (`test_models.py`): requires `DATABASE_URL` env var (defaults to `postgresql://crawl_user:crawl_password@localhost:5432/crawl_db`) when running via `python -m unittest discover`. `export DATABASE_URL=postgresql://crawl_user:crawl_password@localhost:5433/crawl_db `
+- **Model Smoke Test** (`test_models.py`): requires `DATABASE_URL` env var (defaults to `postgresql://crawl_user:crawl_password@localhost:6432/crawl_db`) when running via `python -m unittest discover`. Use `postgresql://crawl_user:crawl_password@localhost:5433/crawl_db` if you need to bypass PgBouncer and hit Postgres directly.
 
 ## Operational Considerations
 - Rate limiting: default concurrency of 4, per-domain delay (500ms) to be a good citizen.
@@ -134,7 +134,7 @@
 
 ## Running with Celery, RabbitMQ, and PostgreSQL
 - Copy `.env.sample` to `.env` (tweak values as needed) so Docker Compose can inject service credentials and URLs.
-- Set `CRAWLER_DATABASE_URL` to the same SQLAlchemy DSN used by ingestion (e.g., `postgresql://crawl_user:crawl_password@postgres:5432/crawl_db` when running inside Docker). The Celery app will derive both broker (`sqla+...`) and result backend (`db+...`) from it automatically if overrides are not provided.
+- Set `CRAWLER_DATABASE_URL` to the same SQLAlchemy DSN used by ingestion (e.g., `postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db` when running inside Docker). The Celery app will derive both broker (`sqla+...`) and result backend (`db+...`) from it automatically if overrides are not provided.
 - Install requirements: `pip install -r requirements.txt` (ensure `ffmpeg` is available on the PATH for HLS downloads).
 - Start a worker:
   ```bash
@@ -150,14 +150,14 @@
       --jobs-file data/thanhnien_jobs.ndjson \
       --storage-root /app/storage \
       --max-workers 4 \
-      --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db
+      --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db
   ```
 - Restrict video downloads to specific categories by passing `--video-enabled-categories` (comma-separated list; values may be category ids, display names, or ingest slugs). Articles outside the list keep their video assets in the `pending_video_assets` backlog while all metadata and images persist as usual.
 - When categories are later approved, re-run ingestion with the same allowlist plus `--process-pending-videos` or execute the dedicated CLI below to enqueue deferred assets without refetching articles:
   ```bash
   python -m crawler.process_pending_videos \
     --site thanhnien \
-    --db-url postgresql://crawl_user:crawl_password@localhost:5433/crawl_db \
+    --db-url postgresql://crawl_user:crawl_password@localhost:6432/crawl_db \
     --storage-root storage \
     --video-enabled-categories sports,magazine
   ```

@@ -43,11 +43,12 @@ docker compose down -v
 
 **What's included:**
 
-1. **PostgreSQL 16** - Database server on port 5432
-2. **RabbitMQ 3 management** - Message broker on port 5672 with UI at http://localhost:15672 (crawler / crawler_password)
-3. **pgAdmin** - Web UI at http://localhost:5050 (admin@admin.com / admin)
-4. **Test App** - Automatically runs tests when started
-5. **Flower** - Celery monitoring at http://localhost:5555 (configurable via `FLOWER_PORT`)
+1. **PgBouncer** - Connection pooler on port 6432 (default DSN target)
+2. **PostgreSQL 16** - Database server on port 5432 (direct maintenance access)
+3. **RabbitMQ 3 management** - Message broker on port 5672 with UI at http://localhost:15672 (crawler / crawler_password)
+4. **pgAdmin** - Web UI at http://localhost:5050 (admin@admin.com / admin)
+5. **Test App** - Automatically runs tests when started
+6. **Flower** - Celery monitoring at http://localhost:5555 (configurable via `FLOWER_PORT`)
 
 **The test script validates:**
 - ✅ UUIDv7 generation
@@ -59,11 +60,14 @@ docker compose down -v
 
 **Celery configuration:**
 - Broker: `amqp://crawler:crawler_password@rabbitmq:5672//`
-- Result backend: `db+postgresql://crawl_user:crawl_password@postgres:5432/crawl_db`
+- Result backend: `db+postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db`
 - Toggle eager execution by setting `CRAWLER_CELERY_TASK_ALWAYS_EAGER=false` (defaults to false in Docker)
 - Storage volume is bind-mounted (`./storage:/app/storage`) so downloaded assets persist on the host
 - Clear pending tasks with `docker compose exec rabbitmq rabbitmqctl purge_queue celery` if you need a clean queue
 - All of the above are parametrised via `.env`; copy `.env.sample` and adjust values before running
+
+**PgBouncer monitoring:**
+- `scripts/pgbouncer_status.sh` runs `SHOW POOLS` through the PgBouncer admin console for a quick view of active/backlogged connections.
 
 RabbitMQ queues stay durable, and task results persist in PostgreSQL so outstanding work resumes after restarts.
 
@@ -81,12 +85,12 @@ Then visit http://localhost:5555 (or the port defined in `FLOWER_PORT`) to inspe
 
 **To connect to pgAdmin:**
 1. Open http://localhost:5050
-2. Add server: Host=postgres, Port=5432, User=crawl_user, Password=crawl_password
+2. Add server: Host=pgbouncer, Port=6432, User=crawl_user, Password=crawl_password
 
 You can also connect directly using any PostgreSQL client:
 ```
 Host: localhost
-Port: 5432
+Port: 6432 (PgBouncer) or 5432 (direct Postgres)
 Database: crawl_db
 User: crawl_user
 Password: crawl_password

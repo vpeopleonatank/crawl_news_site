@@ -141,6 +141,7 @@ def _ensure_storage_capacity(config: IngestConfig, *, context: str) -> None:
 
 @lru_cache(maxsize=8)
 def _session_factory(db_url: str):
+    # Task payloads typically supply the PgBouncer DSN; direct Postgres URLs remain valid overrides.
     engine = create_engine(db_url, **_ENGINE_OPTIONS)
     return sessionmaker(bind=engine)
 

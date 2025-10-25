@@ -82,6 +82,53 @@ class ThanhnienParserTestCase(unittest.TestCase):
         self.assertEqual(asset.source_url, "https://thanhnien.mediacdn.vn/video/sample.mp4")
         self.assertEqual(asset.caption, "Video caption")
 
+    def test_parse_table_image_blocks(self) -> None:
+        html = """
+        <html>
+            <body>
+                <h1>Article With Table Image</h1>
+                <div data-role="content">
+                    <table class="imagefull">
+                        <tr>
+                            <td>
+                                <div>
+                                    <img src="//thanhnien.mediacdn.vn/uploaded/sample.jpg" alt="Article With Table Image" />
+                                </div>
+                            </td>
+                        </tr>
+                    </table>
+                    <table class="imagefull">
+                        <tr>
+                            <td>
+                                <div>
+                                    <img src="https://thanhnien.mediacdn.vn/uploaded/sample-caption.jpg" />
+                                    <div>Ảnh minh họa cho chương trình</div>
+                                </div>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+            </body>
+        </html>
+        """
+
+        result = self.parser.parse(
+            "https://thanhnien.vn/bai-viet/article-with-table-image.htm",
+            html,
+        )
+
+        self.assertEqual(len(result.assets), 2)
+
+        first_asset = result.assets[0]
+        self.assertEqual(first_asset.asset_type, AssetType.IMAGE)
+        self.assertEqual(first_asset.source_url, "https://thanhnien.mediacdn.vn/uploaded/sample.jpg")
+        self.assertIsNone(first_asset.caption)
+
+        second_asset = result.assets[1]
+        self.assertEqual(second_asset.asset_type, AssetType.IMAGE)
+        self.assertEqual(second_asset.source_url, "https://thanhnien.mediacdn.vn/uploaded/sample-caption.jpg")
+        self.assertEqual(second_asset.caption, "Ảnh minh họa cho chương trình")
+
 
 if __name__ == "__main__":
     unittest.main()

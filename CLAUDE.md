@@ -94,7 +94,7 @@ docker compose run --rm test_app \
     --jobs-file data/thanhnien_jobs.ndjson \
     --storage-root /app/storage \
     --max-workers 4 \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db
 
 # Znews ingestion (sitemap loader pulls jobs from https://znews.vn/sitemap/sitemap.xml)
 docker compose run --rm test_app \
@@ -102,7 +102,7 @@ docker compose run --rm test_app \
     --site znews \
     --storage-root /app/storage \
     --max-workers 4 \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db --sitemap-max-documents 0 --sitemap-max-urls-per-document 0
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db --sitemap-max-documents 0 --sitemap-max-urls-per-document 0
 
 # Nld ingestion (timeline pagination loader walks category archives)
 docker compose run --rm test_app \
@@ -110,7 +110,7 @@ docker compose run --rm test_app \
     --site nld \
     --storage-root /app/storage \
     --max-workers 4 \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
     --nld-max-pages 0  # optional: 0 disables the guard to crawl until the archive runs dry
 ```
 
@@ -121,27 +121,27 @@ No `--jobs-file` flag is needed for Znews; the sitemap loader grabs the latest b
 docker compose run --rm test_app \
   python -m crawler.ingest_thanhnien \
     --jobs-file data/thanhnien_jobs.ndjson \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db
 
 # With resume (skip existing URLs)
 docker compose run --rm test_app \
   python -m crawler.ingest \
     --site thanhnien \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
     --resume
 
 # Enable Playwright for HLS video manifest resolution
 docker compose run --rm test_app \
   python -m crawler.ingest \
     --site thanhnien \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
     --use-playwright
 
 # With proxy rotation
 docker compose run --rm test_app \
   python -m crawler.ingest \
     --site thanhnien \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
     --proxy 192.168.1.100:8080:apikey \
     --proxy-change-url http://192.168.1.100:8080/rotate \
     --proxy-rotation-interval 240
@@ -150,7 +150,7 @@ docker compose run --rm test_app \
 docker compose run --rm test_app \
   python -m crawler.ingest \
     --site thanhnien \
-    --db-url postgresql://crawl_user:crawl_password@postgres:5432/crawl_db \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
     --raw-html-cache
 ```
 
@@ -170,7 +170,9 @@ docker compose exec rabbitmq rabbitmqctl purge_queue celery
 ### Testing
 ```bash
 # Run all tests (requires DATABASE_URL set)
-export DATABASE_URL=postgresql://crawl_user:crawl_password@localhost:5433/crawl_db
+export DATABASE_URL=postgresql://crawl_user:crawl_password@localhost:6432/crawl_db
+# Or bypass PgBouncer:
+# export DATABASE_URL_DIRECT=postgresql://crawl_user:crawl_password@localhost:5433/crawl_db
 python -m unittest discover
 
 # Run specific test file
@@ -190,6 +192,7 @@ Primary config via `.env` (see `.env.sample`):
 - `CRAWLER_CELERY_BROKER_URL`: RabbitMQ AMQP URL
 - `CRAWLER_CELERY_RESULT_BACKEND`: Result storage (`db+postgresql://...`)
 - `CRAWLER_CELERY_TASK_ALWAYS_EAGER`: Set to `False` for async execution
+- `DATABASE_URL_DIRECT` / `CRAWLER_DATABASE_URL_DIRECT`: Optional direct Postgres DSNs for migrations or troubleshooting
 
 ### CLI Configuration (`crawler/config.py`)
 Encapsulated in config dataclasses:
@@ -244,6 +247,13 @@ Optional HLS manifest resolution when `--use-playwright` flag set. Launches head
 - Ingestion process returns exit code 1 if any jobs failed
 
 ## Service Details
+
+### PgBouncer (custom Alpine build)
+- Port: 6432 (host) → 6432 (container)
+- Default DSN host: `pgbouncer`
+- Volume: pgbouncer_logs (stores pooled connection logs)
+- Generates config from `.env` at container start (`pgbouncer/docker-entrypoint.sh`)
+- Inspect pools: `scripts/pgbouncer_status.sh`
 
 ### PostgreSQL (postgres:16-alpine)
 - Port: 5433 (host) → 5432 (container)

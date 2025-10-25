@@ -56,7 +56,7 @@ def create_celery_app() -> Celery:
         backend_url = "cache+memory://"
 
     engine_options = {
-        # Keep connection usage conservative by default; tweak via env if needed.
+        # Keep connection usage conservative; PgBouncer multiplexes worker connections.
         "pool_size": _env_int("CRAWLER_DB_POOL_SIZE", 2),
         "max_overflow": _env_int("CRAWLER_DB_MAX_OVERFLOW", 0),
         "pool_recycle": _env_int("CRAWLER_DB_POOL_RECYCLE", 1800),
