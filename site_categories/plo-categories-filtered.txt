@@ -36,7 +36,7 @@ ban-doc-toi-muon-hoi
      --max-workers 4 \
      --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
      --plo-categories phap-luat,phap-luat-chinh-sach-moi,phap-luat-luat-va-doi,an-ninh-trat-tu,an-ninh-trat-tu-ho-so-pha-an,an-ninh-trat-tu-truy-na,thoi-su,thoi-su-chinh-tri,thoi-su-theo-dong-thoi-su,thoi-su-cung-len-tieng,thoi-su-ca-phe-sang,thoi-su--chinh-kien,xa-hoi,quoc-te,quoc-te-su-kien,quoc-te-quan-su,quoc-te-tu-lieu,kinh-te,kinh-te-quan-ly,tai-chinh-ngan-hang,tai-chinh-xanh,ban-doc,ban-doc-y-kien-ban-doc,ban-doc-toi-muon-hoi \
-     --plo-max-pages 0
+     --plo-max-pages 0 --video-enabled-categories phap-luat,phap-luat-chinh-sach-moi,phap-luat-luat-va-doi,an-ninh-trat-tu,an-ninh-trat-tu-ho-so-pha-an,an-ninh-trat-tu-truy-na,thoi-su,thoi-su-chinh-tri
 
 # ============================================================
 # Secondary Coverage: Economy, Urban, Lifestyle, Multimedia

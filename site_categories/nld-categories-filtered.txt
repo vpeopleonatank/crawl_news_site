@@ -54,7 +54,7 @@ marathon
      --max-workers 4 \
      --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
      --nld-categories thoi-su,chinh-tri,xa-hoi,quoc-te,van-de-nong,phap-luat,chuyen-phap-dinh,truy-na,truy-vet-mang-xa-hoi,chinh-sach,luat-su-cua-ban,mang-xa-hoi,ban-doc,thu-ban-doc,toi-len-tieng,doi-song,cuoc-song-nhan-ai,ho-so,ho-so-nong,nguoi-viet-do-day,nguoi-viet-yeu-su-viet,doc-la-do-day,hay-la \
-     --nld-max-pages 0
+     --nld-max-pages 0 --video-enabled-categories thoi-su,chinh-tri,xa-hoi,quoc-te,van-de-nong,phap-luat,chuyen-phap-dinh,truy-na,truy-vet-mang-xa-hoi,ho-so,ho-so-nong
 
 # ============================================================
 # COMMAND 2: Entertainment + Sports Personalities (Optional)
