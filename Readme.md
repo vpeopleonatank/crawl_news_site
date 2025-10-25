@@ -83,6 +83,15 @@ docker compose up -d
 
 Then visit http://localhost:5555 (or the port defined in `FLOWER_PORT`) to inspect queues, tasks, and worker heartbeats in real time.
 
+Requeue failed Celery tasks that are persisted in the SQLAlchemy backend with the helper script in `scripts/requeue_failed_tasks.py`:
+
+```bash
+docker compose run --rm test_app \
+  python scripts/requeue_failed_tasks.py --dry-run
+```
+
+Remove `--dry-run` after inspecting the log output to actually requeue the candidates. When `CRAWLER_CELERY_RESULT_BACKEND` is set in `.env`, the script picks it up automatically; otherwise pass `--backend-url db+postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db` explicitly. Use flags like `--task-name crawler.download_assets` or `--since 2024-03-01T00:00:00Z` to narrow the selection before resubmitting.
+
 **To connect to pgAdmin:**
 1. Open http://localhost:5050
 2. Add server: Host=pgbouncer, Port=6432, User=crawl_user, Password=crawl_password
