@@ -27,10 +27,10 @@ tin-tuc
    python -m crawler.ingest \
      --site kenh14 \
      --storage-root /app/storage \
-     --max-workers 4 \
+     --max-workers 2 \
      --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
      --kenh14-categories hoi-ban-than-showbiz,sao-viet,tv-show,star-style,hau-truong,nhan-vat,du-hoc,ban-tin-46,phap-luat,nong-tren-mang,tin-tuc \
-     --kenh14-max-pages 0 --video-enabled-categories phap-luat,nong-tren-mang,tin-tuc
+     --kenh14-max-pages 999999 --video-enabled-categories phap-luat,nong-tren-mang,tin-tuc
 
 # ============================================================
 # COMMAND 2: Remaining Categories (Run Later)
@@ -40,7 +40,7 @@ tin-tuc
    python -m crawler.ingest \
      --site kenh14 \
      --storage-root /app/storage \
-     --max-workers 4 \
+     --max-workers 2 \
      --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
      --kenh14-categories lam-dep,thoi-trang,mommy-mua-di,dep,phim-chieu-rap,phim-viet-nam,series-truyen-hinh,hoa-ngu-han-quoc,au-my,chau-a,viet-nam,chum-anh,kham-pha,an,quay,di,mommy-ez,house-n-home,metaverse,how-to,wow,2-mall,bong-da,pickleball,esports,song-xanh,khoe-dep,gioi-tinh,cac-benh,dinh-duong \
-     --kenh14-max-pages 0
+     --kenh14-max-pages 999999

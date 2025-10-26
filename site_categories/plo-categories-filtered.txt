@@ -29,14 +29,14 @@ ban-doc-toi-muon-hoi
 # ============================================================
 # COMMAND 1: Hard News + Audience (Run First)
 # ============================================================
-# docker compose run --rm test_app \
+ docker compose run --rm test_app \
    python -m crawler.ingest \
      --site plo \
      --storage-root /app/storage \
-     --max-workers 4 \
+     --max-workers 2 \
      --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
      --plo-categories phap-luat,phap-luat-chinh-sach-moi,phap-luat-luat-va-doi,an-ninh-trat-tu,an-ninh-trat-tu-ho-so-pha-an,an-ninh-trat-tu-truy-na,thoi-su,thoi-su-chinh-tri,thoi-su-theo-dong-thoi-su,thoi-su-cung-len-tieng,thoi-su-ca-phe-sang,thoi-su--chinh-kien,xa-hoi,quoc-te,quoc-te-su-kien,quoc-te-quan-su,quoc-te-tu-lieu,kinh-te,kinh-te-quan-ly,tai-chinh-ngan-hang,tai-chinh-xanh,ban-doc,ban-doc-y-kien-ban-doc,ban-doc-toi-muon-hoi \
-     --plo-max-pages 0 --video-enabled-categories phap-luat,phap-luat-chinh-sach-moi,phap-luat-luat-va-doi,an-ninh-trat-tu,an-ninh-trat-tu-ho-so-pha-an,an-ninh-trat-tu-truy-na,thoi-su,thoi-su-chinh-tri
+     --video-enabled-categories phap-luat,phap-luat-chinh-sach-moi,phap-luat-luat-va-doi,an-ninh-trat-tu,an-ninh-trat-tu-ho-so-pha-an,an-ninh-trat-tu-truy-na,thoi-su,thoi-su-chinh-tri
 
 # ============================================================
 # Secondary Coverage: Economy, Urban, Lifestyle, Multimedia
@@ -60,7 +60,6 @@ ban-doc-toi-muon-hoi
    python -m crawler.ingest \
      --site plo \
      --storage-root /app/storage \
-     --max-workers 4 \
+     --max-workers 2 \
      --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
-     --plo-categories do-thi,do-thi-giao-thong,do-thi-moi-truong,do-thi-bat-dong-san-quan-ly-nha-dat,do-thi-bat-dong-san-tu-van,do-thi-bat-dong-san-khong-gian-song,bat-dong-san,thi-truong-tieu-dung,kinh-te-du-lich,kinh-te-xanh,du-lich-trong-nuoc,du-lich-quoc-te,du-lich-kinh-nghiem,an-sach-song-khoe,an-sach-song-khoe-an-toan-ve-sinh-thuc-pham,suc-khoe,giao-duc,van-hoa,the-thao,the-thao-trong-nuoc,the-thao-quoc-te,the-thao-hau-truong,the-thao-video,multimedia,media,video-tin-tuc,video-nong-hom-nay,audio,cong-nghe-trong-tam-tay,story \
-     --plo-max-pages 0
+     --plo-categories do-thi,do-thi-giao-thong,do-thi-moi-truong,do-thi-bat-dong-san-quan-ly-nha-dat,do-thi-bat-dong-san-tu-van,do-thi-bat-dong-san-khong-gian-song,bat-dong-san,thi-truong-tieu-dung,kinh-te-du-lich,kinh-te-xanh,du-lich-trong-nuoc,du-lich-quoc-te,du-lich-kinh-nghiem,an-sach-song-khoe,an-sach-song-khoe-an-toan-ve-sinh-thuc-pham,suc-khoe,giao-duc,van-hoa,the-thao,the-thao-trong-nuoc,the-thao-quoc-te,the-thao-hau-truong,the-thao-video,multimedia,media,video-tin-tuc,video-nong-hom-nay,audio,cong-nghe-trong-tam-tay,story

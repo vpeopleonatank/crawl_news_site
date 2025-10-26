@@ -51,10 +51,10 @@ marathon
    python -m crawler.ingest \
      --site nld \
      --storage-root /app/storage \
-     --max-workers 4 \
+     --max-workers 2 \
      --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
      --nld-categories thoi-su,chinh-tri,xa-hoi,quoc-te,van-de-nong,phap-luat,chuyen-phap-dinh,truy-na,truy-vet-mang-xa-hoi,chinh-sach,luat-su-cua-ban,mang-xa-hoi,ban-doc,thu-ban-doc,toi-len-tieng,doi-song,cuoc-song-nhan-ai,ho-so,ho-so-nong,nguoi-viet-do-day,nguoi-viet-yeu-su-viet,doc-la-do-day,hay-la \
-     --nld-max-pages 0 --video-enabled-categories thoi-su,chinh-tri,xa-hoi,quoc-te,van-de-nong,phap-luat,chuyen-phap-dinh,truy-na,truy-vet-mang-xa-hoi,ho-so,ho-so-nong
+     --video-enabled-categories thoi-su,chinh-tri,xa-hoi,quoc-te,van-de-nong,phap-luat,chuyen-phap-dinh,truy-na,truy-vet-mang-xa-hoi,ho-so,ho-so-nong
 
 # ============================================================
 # COMMAND 2: Entertainment + Sports Personalities (Optional)
@@ -63,7 +63,6 @@ marathon
    python -m crawler.ingest \
      --site nld \
      --storage-root /app/storage \
-     --max-workers 4 \
+     --max-workers 2 \
      --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
-     --nld-categories giai-tri,chuyen-cua-sao,hau-truong-showbiz,dien-anh,am-nhac,san-khau,van-hoa-van-nghe,giai-tri-cung-ai,nghe-xem-doc-gi,the-thao,bong-da,hau-truong,tennis,golf,marathon \
-     --nld-max-pages 0
+     --nld-categories giai-tri,chuyen-cua-sao,hau-truong-showbiz,dien-anh,am-nhac,san-khau,van-hoa-van-nghe,giai-tri-cung-ai,nghe-xem-doc-gi,the-thao,bong-da,hau-truong,tennis,golf,marathon
