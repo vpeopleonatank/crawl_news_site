@@ -210,7 +210,7 @@ class NldCategoryLoader:
             if fingerprint:
                 previous_fingerprint = fingerprint
 
-            for job in self._emit_jobs_from_urls(urls):
+            for job in self._emit_jobs_from_urls(urls, category_slug=category.slug):
                 yield job
 
             page += 1
@@ -274,7 +274,7 @@ class NldCategoryLoader:
         delay = self._fetch_retry_backoff * (2 ** attempt)
         time.sleep(delay)
 
-    def _emit_jobs_from_html(self, html: str) -> Iterator[ArticleJob]:
+    def _emit_jobs_from_html(self, html: str, *, category_slug: str | None = None) -> Iterator[ArticleJob]:
         for url in self._extract_article_urls(html):
             self.stats.total += 1
 
@@ -287,11 +287,16 @@ class NldCategoryLoader:
                 self.stats.skipped_existing += 1
                 continue
 
-            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None)
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None, category_slug=category_slug)
             self.stats.emitted += 1
             yield job
 
-    def _emit_jobs_from_urls(self, urls: Sequence[str]) -> Iterator[ArticleJob]:
+    def _emit_jobs_from_urls(
+        self,
+        urls: Sequence[str],
+        *,
+        category_slug: str | None = None,
+    ) -> Iterator[ArticleJob]:
         for url in urls:
             self.stats.total += 1
 
@@ -304,7 +309,7 @@ class NldCategoryLoader:
                 self.stats.skipped_existing += 1
                 continue
 
-            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None)
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None, category_slug=category_slug)
             self.stats.emitted += 1
             yield job
 
