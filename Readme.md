@@ -107,6 +107,33 @@ Password: crawl_password
 
 The test will show detailed output with all operations and confirm everything works correctly!
 
+## Exporting Articles to CSV
+
+Use `scripts/export_articles_csv.py` to export article-related tables to one CSV
+per table. It supports filtering by `site_slug` and selecting a subset of tables.
+
+**Examples:**
+
+```bash
+# Export all article-related tables for a single site
+python scripts/export_articles_csv.py \
+  --db-url postgresql://crawl_user:crawl_password@localhost:6432/crawl_db \
+  --site-slug thanhnien \
+  --output-dir exports
+
+# Export only specific tables (no site filter)
+python scripts/export_articles_csv.py \
+  --db-url postgresql://crawl_user:crawl_password@localhost:6432/crawl_db \
+  --tables articles,article_images,article_videos \
+  --output-dir exports
+```
+
+**Options:**
+- `--db-url`: PostgreSQL connection string.
+- `--site-slug`: Filter by site (applies to related tables via join).
+- `--tables`: Comma-separated table list (default includes all).
+- `--output-dir`: Output directory for CSVs.
+
 ## Storage Management
 
 Multi-volume storage management, automatic pause handling, and the helper CLI are
