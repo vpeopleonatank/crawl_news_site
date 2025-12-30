@@ -1,0 +1,2 @@
+docker compose run --rm test_app python -m crawler.ingest --site vov --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db --storage-root /app/storage --max-workers
+        4 --resume --vov-categories chinh-tri,xa-hoi,the-gioi,multimedia,kinh-te,thi-truong,phap-luat,the-thao,oto-xe-may,doanh-nghiep,cong-nghe,suc-khoe,doi-song,van-hoa,giai-tri,du-lich,quan-su-quoc-phong --vov-max-pages 0 --vov-max-empty-pages 2

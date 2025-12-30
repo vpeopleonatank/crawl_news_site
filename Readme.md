@@ -178,6 +178,48 @@ docker compose run --rm test_app \
 - Ad-related filename patterns (banner, sponsor, ad-)
 - Duplicate images appearing in multiple articles
 
+## Re-crawling Existing Articles
+
+By default, `crawler/ingest.py` will re-fetch and re-parse URLs even if they already exist in the database (it upserts by `Article.url`).
+
+Use `--resume` to *skip* URLs that are already present in the DB for the selected `--site`.
+
+**Examples:**
+
+```bash
+# Re-crawl (refresh) an ingestion window (no --resume)
+docker compose run --rm test_app \
+  python -m crawler.ingest \
+    --site thanhnien \
+    --storage-root /app/storage \
+    --max-workers 4 \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db
+
+# Skip already-crawled URLs (resume mode)
+docker compose run --rm test_app \
+  python -m crawler.ingest \
+    --site thanhnien \
+    --resume \
+    --storage-root /app/storage \
+    --max-workers 4 \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db
+```
+
+To re-crawl a specific URL, put it in an NDJSON jobs file (one JSON object per line) and run ingestion *without* `--resume`:
+
+```bash
+printf '%s\n' '{"url":"https://thanhnien.vn/some-article-185123456.htm"}' > recrawl.ndjson
+
+docker compose run --rm test_app \
+  python -m crawler.ingest \
+    --site thanhnien \
+    --jobs-file recrawl.ndjson \
+    --storage-root /app/storage \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db
+```
+
+Note: asset downloads use deterministic paths under `storage/articles/{uuid}/...`; re-crawling will overwrite existing downloaded files for that article/sequence.
+
 ## Storage Management
 
 Multi-volume storage management, automatic pause handling, and the helper CLI are
