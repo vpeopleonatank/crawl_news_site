@@ -268,6 +268,10 @@ def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
             asset.referrer = job.get("article_url")
 
     config = _build_config(job["config"])
+    persistence: ArticlePersistence | None = None
+
+    _ensure_storage_capacity(config, context=f"pre-download check for article {article_id}")
+
     db_url = str(job["db_url"])
     session_factory = _session_factory(db_url)
     persistence = ArticlePersistence(
@@ -278,8 +282,6 @@ def download_assets_task(self: Task, job: Mapping[str, Any]) -> dict[str, Any]:
     )
 
     try:
-        
-        _ensure_storage_capacity(config, context=f"pre-download check for article {article_id}")
 
         with AssetManager(config) as manager:
             stored_assets = manager.download_assets(article_id, assets)

@@ -65,7 +65,7 @@ class DownloadAssetsTaskTestCase(unittest.TestCase):
 
         asset_manager_cls.assert_not_called()
         persistence_cls.assert_not_called()
-        session_factory.assert_called_once_with("sqlite://")
+        session_factory.assert_not_called()
 
     @patch("crawler.tasks.StorageMonitor")
     @patch("crawler.tasks._session_factory")

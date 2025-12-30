@@ -234,6 +234,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum consecutive PLO API pages without new URLs before stopping (0 or negative disables the guard; default is 3).",
     )
+    parser.add_argument(
+        "--vov-categories",
+        type=str,
+        default=None,
+        help="Comma-separated list of VOV category slugs to ingest (defaults to curated subset when omitted).",
+    )
+    parser.add_argument(
+        "--vov-all-categories",
+        action="store_true",
+        help="Crawl all known VOV categories (overrides curated defaults).",
+    )
+    parser.add_argument(
+        "--vov-max-pages",
+        type=int,
+        default=None,
+        help="Maximum number of pages to fetch per VOV category (0 or negative disables the limit; default is 200).",
+    )
+    parser.add_argument(
+        "--vov-max-empty-pages",
+        type=int,
+        default=None,
+        help="Maximum consecutive VOV pages without new URLs before stopping (0 or negative disables the guard; default is 2).",
+    )
     return parser
 
 
@@ -383,6 +406,13 @@ def build_config(args: argparse.Namespace, site: SiteDefinition) -> IngestConfig
         config.plo.max_pages = _apply_sitemap_limit(config.plo.max_pages, getattr(args, "plo_max_pages", None))
         config.plo.max_empty_pages = _apply_sitemap_limit(
             config.plo.max_empty_pages, getattr(args, "plo_max_empty_pages", None)
+        )
+    elif site.slug == "vov":
+        config.vov.selected_slugs = _parse_category_slugs(getattr(args, "vov_categories", None))
+        config.vov.crawl_all = bool(getattr(args, "vov_all_categories", False))
+        config.vov.max_pages = _apply_sitemap_limit(config.vov.max_pages, getattr(args, "vov_max_pages", None))
+        config.vov.max_empty_pages = _apply_sitemap_limit(
+            config.vov.max_empty_pages, getattr(args, "vov_max_empty_pages", None)
         )
     return config
 

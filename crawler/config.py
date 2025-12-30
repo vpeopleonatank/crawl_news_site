@@ -188,6 +188,16 @@ class PloCategoryConfig:
 
 
 @dataclass(slots=True)
+class VovCategoryConfig:
+    """Category selection controls for VOV ingestion."""
+
+    selected_slugs: tuple[str, ...] = ()
+    crawl_all: bool = False
+    max_pages: int | None = 200
+    max_empty_pages: int | None = 2
+
+
+@dataclass(slots=True)
 class VideoDownloadConfig:
     """Controls for per-category video asset downloads."""
 
@@ -248,6 +258,7 @@ class IngestConfig:
     nld: NldCategoryConfig = field(default_factory=NldCategoryConfig)
     kenh14: Kenh14CategoryConfig = field(default_factory=Kenh14CategoryConfig)
     plo: PloCategoryConfig = field(default_factory=PloCategoryConfig)
+    vov: VovCategoryConfig = field(default_factory=VovCategoryConfig)
     video: VideoDownloadConfig = field(default_factory=VideoDownloadConfig)
 
     def ensure_directories(self) -> None:

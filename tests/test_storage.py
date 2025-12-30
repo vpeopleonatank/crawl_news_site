@@ -17,7 +17,7 @@ from crawler.storage import (
 
 class StorageSettingsTestCase(unittest.TestCase):
     def test_defaults_use_requested_root(self) -> None:
-        with TemporaryDirectory() as tmpdir:
+        with TemporaryDirectory() as tmpdir, patch.dict(os.environ, {}, clear=True):
             base = Path(tmpdir) / "storage"
             settings = load_storage_settings(base)
             self.assertEqual(settings.active_volume, "default")

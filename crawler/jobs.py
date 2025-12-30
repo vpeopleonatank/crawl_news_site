@@ -61,6 +61,8 @@ _NLD_ARTICLE_PATTERN = re.compile(
 _PLO_BASE_URL = "https://plo.vn"
 _PLO_API_BASE = "https://api.plo.vn"
 _PLO_ARTICLE_PATTERN = re.compile(r"^https?://(?:[^./]+\.)?plo\.vn/[^?#]+-post\d+\.html$", re.IGNORECASE)
+_VOV_BASE_URL = "https://vov.vn"
+_VOV_ARTICLE_PATTERN = re.compile(r"^https?://(?:www\.)?vov\.vn/[^?#]+\.vov$", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -103,6 +105,263 @@ class NldCategoryDefinition:
 
     def timeline_url(self, page: int) -> str:
         return f"{_NLD_BASE_URL}/timelinelist/{self.category_id}/{page}.htm"
+
+
+@dataclass(slots=True)
+class VovCategoryDefinition:
+    slug: str
+    name: str
+    landing_url: str
+
+    def normalized_landing_url(self) -> str:
+        return _normalize_vov_url(self.landing_url)
+
+    def page_url(self, page: int) -> str:
+        normalized = self.normalized_landing_url()
+        return f"{normalized}?page={page}"
+
+
+class VovCategoryLoader:
+    """Iterate VOV category pages using ?page= pagination."""
+
+    def __init__(
+        self,
+        categories: Sequence[VovCategoryDefinition],
+        *,
+        existing_urls: set[str] | None = None,
+        resume: bool = False,
+        user_agent: str | None = None,
+        max_pages: int | None = None,
+        max_empty_pages: int | None = 2,
+        request_timeout: float = 5.0,
+        include_landing_page: bool = True,
+        duplicate_fingerprint_size: int = 5,
+        stop_on_duplicate: bool = True,
+        proxy: ProxyConfig | None = None,
+        max_fetch_attempts: int = 3,
+        fetch_retry_backoff: float = 1.0,
+    ) -> None:
+        self._categories = list(categories)
+        self._existing_urls = existing_urls or set()
+        self._resume = resume
+        self._user_agent = user_agent
+        self._max_pages = max_pages
+        self._max_empty_pages = max_empty_pages
+        self._request_timeout = request_timeout
+        self._include_landing_page = include_landing_page
+        self._duplicate_fingerprint_size = max(1, duplicate_fingerprint_size)
+        self._stop_on_duplicate = stop_on_duplicate
+        self._proxy = proxy
+        self._max_fetch_attempts = max(1, int(max_fetch_attempts))
+        self._fetch_retry_backoff = max(0.0, float(fetch_retry_backoff))
+
+        self.stats = JobLoaderStats()
+        self._seen_urls: set[str] = set()
+
+    def __iter__(self) -> Iterator[ArticleJob]:
+        self.stats = JobLoaderStats()
+        self._seen_urls.clear()
+
+        headers = {"User-Agent": self._user_agent} if self._user_agent else None
+        proxy_url = self._proxy.httpx_proxy() if self._proxy else None
+        client_kwargs: dict[str, object] = {
+            "headers": headers,
+            "timeout": self._request_timeout,
+        }
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+
+        with httpx.Client(**client_kwargs) as client:
+            for category in self._categories:
+                yield from self._iterate_category(client, category)
+
+    def _iterate_category(self, client: httpx.Client, category: VovCategoryDefinition) -> Iterator[ArticleJob]:
+        emitted_before = self.stats.emitted
+        skipped_existing_before = self.stats.skipped_existing
+        skipped_duplicate_before = self.stats.skipped_duplicate
+
+        if self._include_landing_page:
+            landing_html = self._fetch_html(client, category.normalized_landing_url())
+            if landing_html:
+                yield from self._emit_jobs_from_html(landing_html, category_slug=category.slug)
+
+        page = 1
+        consecutive_empty_pages = 0
+        previous_fingerprint: list[str] | None = None
+
+        while True:
+            if self._max_pages is not None and page > self._max_pages:
+                break
+
+            page_url = category.page_url(page)
+            html = self._fetch_html(client, page_url)
+            if not html:
+                consecutive_empty_pages += 1
+                if self._max_empty_pages is not None and consecutive_empty_pages >= self._max_empty_pages:
+                    break
+                page += 1
+                continue
+
+            urls = self._extract_article_urls(html)
+            if not urls:
+                consecutive_empty_pages += 1
+                if self._max_empty_pages is not None and consecutive_empty_pages >= self._max_empty_pages:
+                    break
+                page += 1
+                continue
+
+            consecutive_empty_pages = 0
+            fingerprint = urls[: self._duplicate_fingerprint_size]
+            if (
+                self._stop_on_duplicate
+                and previous_fingerprint is not None
+                and fingerprint
+                and fingerprint == previous_fingerprint
+            ):
+                LOGGER.info(
+                    "VOV category '%s': detected duplicate pagination at %s; stopping.",
+                    category.slug,
+                    page_url,
+                )
+                break
+            if fingerprint:
+                previous_fingerprint = fingerprint
+
+            for job in self._emit_jobs_from_urls(urls, category_slug=category.slug):
+                yield job
+
+            page += 1
+
+        LOGGER.info(
+            "VOV category '%s': emitted=%d skipped_existing=%d skipped_duplicate=%d",
+            category.slug,
+            self.stats.emitted - emitted_before,
+            self.stats.skipped_existing - skipped_existing_before,
+            self.stats.skipped_duplicate - skipped_duplicate_before,
+        )
+
+    def _fetch_html(self, client: httpx.Client, url: str) -> str:
+        for attempt in range(self._max_fetch_attempts):
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+            except httpx.TimeoutException as exc:
+                LOGGER.warning(
+                    "VOV category request timeout (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPStatusError as exc:
+                LOGGER.warning("VOV category request failed (%s): %s", url, exc)
+                if (
+                    exc.response is not None
+                    and 500 <= exc.response.status_code < 600
+                    and self._should_retry(attempt)
+                ):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            except httpx.HTTPError as exc:
+                LOGGER.warning(
+                    "VOV category request error (%s) attempt %d/%d: %s",
+                    url,
+                    attempt + 1,
+                    self._max_fetch_attempts,
+                    exc,
+                )
+                if self._should_retry(attempt):
+                    self._sleep_before_retry(attempt)
+                    continue
+                return ""
+            return response.text.strip()
+        return ""
+
+    def _should_retry(self, attempt: int) -> bool:
+        return attempt + 1 < self._max_fetch_attempts
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self._fetch_retry_backoff <= 0:
+            return
+        delay = self._fetch_retry_backoff * (2**attempt)
+        time.sleep(delay)
+
+    def _emit_jobs_from_html(self, html: str, *, category_slug: str | None = None) -> Iterator[ArticleJob]:
+        for url in self._extract_article_urls(html):
+            self.stats.total += 1
+
+            if url in self._seen_urls:
+                self.stats.skipped_duplicate += 1
+                continue
+            self._seen_urls.add(url)
+
+            if self._resume and url in self._existing_urls:
+                self.stats.skipped_existing += 1
+                continue
+
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None, category_slug=category_slug)
+            self.stats.emitted += 1
+            yield job
+
+    def _emit_jobs_from_urls(
+        self,
+        urls: Sequence[str],
+        *,
+        category_slug: str | None = None,
+    ) -> Iterator[ArticleJob]:
+        for url in urls:
+            self.stats.total += 1
+
+            if url in self._seen_urls:
+                self.stats.skipped_duplicate += 1
+                continue
+            self._seen_urls.add(url)
+
+            if self._resume and url in self._existing_urls:
+                self.stats.skipped_existing += 1
+                continue
+
+            job = ArticleJob(url=url, lastmod=None, sitemap_url=None, image_url=None, category_slug=category_slug)
+            self.stats.emitted += 1
+            yield job
+
+    def _extract_article_urls(self, html: str) -> list[str]:
+        soup = BeautifulSoup(html, "html.parser")
+        urls: list[str] = []
+        seen_local: set[str] = set()
+
+        candidate_attributes = (
+            "data-io-canonical-url",
+            "data-link",
+            "data-url",
+            "data-href",
+            "data-src",
+            "href",
+        )
+
+        for anchor in soup.find_all("a"):
+            normalized: str | None = None
+            for attribute in candidate_attributes:
+                if attribute not in anchor.attrs:
+                    continue
+                normalized = _normalize_vov_article_href(anchor.get(attribute))
+                if normalized:
+                    break
+
+            if not normalized:
+                continue
+            if normalized in seen_local:
+                continue
+
+            seen_local.add(normalized)
+            urls.append(normalized)
+
+        return urls
 
 
 class NldCategoryLoader:
@@ -406,6 +665,19 @@ def _normalize_plo_url(raw_url: str) -> str:
     return cleaned
 
 
+def _normalize_vov_url(raw_url: str) -> str:
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return _VOV_BASE_URL
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_VOV_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_VOV_BASE_URL}/", cleaned)
+    return cleaned
+
+
 def _normalize_plo_article_href(raw_href: str | None) -> str | None:
     if not raw_href:
         return None
@@ -500,6 +772,30 @@ def _normalize_nld_article_href(raw_href: str | None) -> str | None:
         cleaned = urljoin(f"{_NLD_BASE_URL}/", cleaned)
 
     if not _NLD_ARTICLE_PATTERN.match(cleaned):
+        return None
+    return cleaned
+
+
+def _normalize_vov_article_href(raw_href: str | None) -> str | None:
+    if not raw_href:
+        return None
+
+    cleaned = raw_href.strip()
+    if not cleaned or cleaned.lower().startswith(("javascript:", "mailto:")):
+        return None
+
+    cleaned = cleaned.split("#", 1)[0].split("?", 1)[0]
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("//"):
+        cleaned = f"https:{cleaned}"
+    elif cleaned.startswith("/"):
+        cleaned = urljoin(_VOV_BASE_URL, cleaned)
+    elif not cleaned.startswith("http"):
+        cleaned = urljoin(f"{_VOV_BASE_URL}/", cleaned)
+
+    if not _VOV_ARTICLE_PATTERN.match(cleaned):
         return None
     return cleaned
 
@@ -1864,6 +2160,53 @@ _DEFAULT_PLO_CATEGORIES: tuple[PloCategoryDefinition, ...] = (
     ),
 )
 
+_DEFAULT_VOV_CATEGORY_SLUGS: tuple[str, ...] = (
+    "chinh-tri",
+    "xa-hoi",
+    "the-gioi",
+    "multimedia",
+    "kinh-te",
+    "thi-truong",
+    "phap-luat",
+    "the-thao",
+    "oto-xe-may",
+    "doanh-nghiep",
+    "cong-nghe",
+    "suc-khoe",
+    "doi-song",
+    "van-hoa",
+    "giai-tri",
+    "du-lich",
+    "quan-su-quoc-phong",
+)
+_DEFAULT_VOV_CATEGORIES: tuple[VovCategoryDefinition, ...] = (
+    VovCategoryDefinition(slug="chinh-tri", name="Chính trị", landing_url="https://vov.vn/chinh-tri"),
+    VovCategoryDefinition(slug="xa-hoi", name="Xã hội", landing_url="https://vov.vn/xa-hoi"),
+    VovCategoryDefinition(slug="the-gioi", name="Thế giới", landing_url="https://vov.vn/the-gioi"),
+    VovCategoryDefinition(slug="multimedia", name="Multimedia", landing_url="https://vov.vn/multimedia"),
+    VovCategoryDefinition(slug="kinh-te", name="Kinh tế", landing_url="https://vov.vn/kinh-te"),
+    VovCategoryDefinition(slug="thi-truong", name="Thị trường", landing_url="https://vov.vn/thi-truong"),
+    VovCategoryDefinition(slug="phap-luat", name="Pháp luật", landing_url="https://vov.vn/phap-luat"),
+    VovCategoryDefinition(slug="the-thao", name="Thể thao", landing_url="https://vov.vn/the-thao"),
+    VovCategoryDefinition(slug="oto-xe-may", name="Ô tô - Xe máy", landing_url="https://vov.vn/oto-xe-may"),
+    VovCategoryDefinition(
+        slug="doanh-nghiep",
+        name="Doanh nghiệp",
+        landing_url="https://vov.vn/kinh-te/doanh-nghiep",
+    ),
+    VovCategoryDefinition(slug="cong-nghe", name="Công nghệ", landing_url="https://vov.vn/cong-nghe"),
+    VovCategoryDefinition(slug="suc-khoe", name="Sức khỏe", landing_url="https://vov.vn/suc-khoe"),
+    VovCategoryDefinition(slug="doi-song", name="Đời sống", landing_url="https://vov.vn/doi-song"),
+    VovCategoryDefinition(slug="van-hoa", name="Văn hóa", landing_url="https://vov.vn/van-hoa"),
+    VovCategoryDefinition(slug="giai-tri", name="Giải trí", landing_url="https://vov.vn/giai-tri"),
+    VovCategoryDefinition(slug="du-lich", name="Du lịch", landing_url="https://vov.vn/du-lich"),
+    VovCategoryDefinition(
+        slug="quan-su-quoc-phong",
+        name="Quân sự - Quốc phòng",
+        landing_url="https://vov.vn/quan-su-quoc-phong",
+    ),
+)
+
 
 def _load_nld_category_catalog(catalog_path: Path) -> dict[str, NldCategoryDefinition]:
     try:
@@ -2066,6 +2409,101 @@ def build_plo_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLo
         max_empty_pages=config.plo.max_empty_pages,
         request_timeout=config.timeout.request_timeout,
         include_landing_page=False,
+        proxy=config.proxy,
+    )
+
+
+def _load_vov_category_catalog(catalog_path: Path) -> dict[str, VovCategoryDefinition]:
+    try:
+        raw_payload = catalog_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"VOV category catalog not found: {catalog_path}") from exc
+
+    try:
+        records = json.loads(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid VOV category catalog: {exc}") from exc
+
+    catalog: dict[str, VovCategoryDefinition] = {}
+    for entry in records:
+        slug = entry.get("slug")
+        name = entry.get("name") or ""
+        landing_url = entry.get("landing_url") or ""
+
+        if not isinstance(slug, str) or not slug:
+            raise ValueError("Category catalog entries must include a non-empty 'slug'")
+        if not isinstance(landing_url, str) or not landing_url:
+            raise ValueError(f"Invalid landing_url for slug '{slug}': {entry.get('landing_url')}")
+
+        definition = VovCategoryDefinition(
+            slug=slug.strip().lower(),
+            name=name.strip() or slug,
+            landing_url=_normalize_vov_url(landing_url),
+        )
+        catalog[definition.slug] = definition
+
+    if not catalog:
+        raise ValueError("VOV category catalog is empty")
+    return catalog
+
+
+def _select_vov_categories(
+    config: IngestConfig, catalog: dict[str, VovCategoryDefinition]
+) -> list[VovCategoryDefinition]:
+    if config.vov.crawl_all:
+        selected_slugs = list(catalog.keys())
+    elif config.vov.selected_slugs:
+        selected_slugs = list(config.vov.selected_slugs)
+    else:
+        selected_slugs = [slug for slug in _DEFAULT_VOV_CATEGORY_SLUGS if slug in catalog]
+
+    if not selected_slugs:
+        raise ValueError("No VOV categories selected. Provide --vov-categories or update the VOV category catalog.")
+
+    missing = [slug for slug in selected_slugs if slug not in catalog]
+    if missing:
+        raise ValueError(f"Unknown VOV categories requested: {', '.join(missing)}")
+
+    return [catalog[slug] for slug in selected_slugs]
+
+
+def build_vov_job_loader(config: IngestConfig, existing_urls: set[str]) -> JobLoader:
+    if config.jobs_file_provided:
+        LOGGER.info("VOV jobs file supplied; using NDJSONJobLoader at %s", config.jobs_file)
+        return NDJSONJobLoader(
+            jobs_file=config.jobs_file,
+            existing_urls=existing_urls,
+            resume=config.resume,
+        )
+
+    catalog: dict[str, VovCategoryDefinition] = {category.slug: category for category in _DEFAULT_VOV_CATEGORIES}
+
+    catalog_path = Path("data/vov_categories.json")
+    if catalog_path.exists():
+        try:
+            catalog = _load_vov_category_catalog(catalog_path)
+            LOGGER.info("Loaded VOV category catalog from %s", catalog_path)
+        except ValueError as exc:
+            LOGGER.warning("Ignoring invalid VOV category catalog at %s: %s", catalog_path, exc)
+
+    try:
+        categories = _select_vov_categories(config, catalog)
+    except ValueError as exc:
+        raise ValueError(f"Failed to select VOV categories: {exc}") from exc
+
+    LOGGER.info(
+        "Initialized VovCategoryLoader with categories: %s",
+        ", ".join(category.slug for category in categories),
+    )
+
+    return VovCategoryLoader(
+        categories=categories,
+        existing_urls=existing_urls,
+        resume=config.resume,
+        user_agent=config.user_agent,
+        max_pages=config.vov.max_pages,
+        max_empty_pages=config.vov.max_empty_pages,
+        request_timeout=config.timeout.request_timeout,
         proxy=config.proxy,
     )
 

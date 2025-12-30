@@ -11,6 +11,7 @@ from .jobs import (
     build_nld_job_loader,
     build_plo_job_loader,
     build_thanhnien_job_loader,
+    build_vov_job_loader,
     build_znews_job_loader,
 )
 from .parsers import ArticleParser
@@ -19,6 +20,7 @@ from .parsers.znews import ZnewsParser
 from .parsers.kenh14 import Kenh14Parser
 from .parsers.nld import NldParser
 from .parsers.plo import PloParser
+from .parsers.vov import VovParser
 from .parsers.vtcnews import VtcnewsParser
 from .playwright_support import ThanhnienVideoResolver
 
@@ -97,6 +99,13 @@ _SITE_REGISTRY: Dict[str, SiteDefinition] = {
         default_user_agent="vtcnews-ingestor/1.0",
         sitemap_url="https://vtcnews.vn/sitemap.xml",
         sitemap_allowed_patterns=("sitemap-article-",),
+    ),
+    "vov": SiteDefinition(
+        slug="vov",
+        parser_factory=VovParser,
+        default_jobs_file=Path("data/vov_jobs.ndjson"),
+        default_user_agent="vov-ingestor/1.0",
+        job_loader_factory=build_vov_job_loader,
     ),
 }
 

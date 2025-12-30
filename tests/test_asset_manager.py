@@ -1,4 +1,6 @@
 import unittest
+from tempfile import TemporaryDirectory
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -94,6 +96,13 @@ class AssetManagerProxyTestCase(unittest.TestCase):
 
 
 class AssetManagerDownloadWorkflowTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = TemporaryDirectory()
+        self._storage_root = Path(self._tmpdir.name) / "storage"
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
     def test_skips_blacklisted_lotus_quiz_assets(self) -> None:
         asset = ParsedAsset(
             source_url="https://challenge.lotus.vn/corona/quiz?_id=5e3bec8324d9b3",
@@ -102,7 +111,8 @@ class AssetManagerDownloadWorkflowTestCase(unittest.TestCase):
         )
 
         with patch.object(AssetManager, "_stream_to_file") as stream_mock:
-            manager = AssetManager(IngestConfig(), client=FakeClient())
+            config = IngestConfig(storage_root=self._storage_root)
+            manager = AssetManager(config, client=FakeClient())
             try:
                 stored = manager.download_assets("0199d134-ebf2-7f21-9994-b498b1d20456", [asset])
             finally:
@@ -122,7 +132,8 @@ class AssetManagerDownloadWorkflowTestCase(unittest.TestCase):
         asset = ParsedAsset(source_url=embed_url, asset_type=AssetType.VIDEO, sequence=1)
 
         with patch.object(AssetManager, "_stream_to_file", return_value=("checksum", 1024)) as stream_mock:
-            manager = AssetManager(IngestConfig(), client=FakeClient())
+            config = IngestConfig(storage_root=self._storage_root)
+            manager = AssetManager(config, client=FakeClient())
             try:
                 stored = manager.download_assets("0199d131-942a-7a72-a0bb-55944b57ea1d", [asset])
             finally:
@@ -147,7 +158,7 @@ class AssetManagerDownloadWorkflowTestCase(unittest.TestCase):
         )
 
         with patch.object(AssetManager, "_stream_to_file", return_value=("checksum", 2048)) as stream_mock:
-            config = IngestConfig()
+            config = IngestConfig(storage_root=self._storage_root)
             manager = AssetManager(config, client=FakeClient())
             try:
                 manager.download_assets("0199d5f6-9903-75b0-a394-9f7f15a2e807", [asset])
@@ -168,7 +179,7 @@ class AssetManagerDownloadWorkflowTestCase(unittest.TestCase):
         )
 
         with patch.object(AssetManager, "_stream_to_file", return_value=("checksum", 1024)) as stream_mock:
-            config = IngestConfig()
+            config = IngestConfig(storage_root=self._storage_root)
             manager = AssetManager(config, client=FakeClient())
             try:
                 manager.download_assets("0199d5f6-9903-75b0-a394-9f7f15a2e807", [asset])
