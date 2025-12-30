@@ -6,13 +6,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, TYPE_CHECKING
 
-from .jobs import build_thanhnien_job_loader, build_znews_job_loader, build_kenh14_job_loader, build_nld_job_loader, build_plo_job_loader
+from .jobs import (
+    build_kenh14_job_loader,
+    build_nld_job_loader,
+    build_plo_job_loader,
+    build_thanhnien_job_loader,
+    build_znews_job_loader,
+)
 from .parsers import ArticleParser
 from .parsers.thanhnien import ThanhnienParser
 from .parsers.znews import ZnewsParser
 from .parsers.kenh14 import Kenh14Parser
 from .parsers.nld import NldParser
 from .parsers.plo import PloParser
+from .parsers.vtcnews import VtcnewsParser
 from .playwright_support import ThanhnienVideoResolver
 
 if TYPE_CHECKING:
@@ -30,6 +37,8 @@ class SiteDefinition:
     default_user_agent: str
     playwright_resolver_factory: Callable[[float], object] | None = None
     job_loader_factory: Callable[["IngestConfig", set[str]], "JobLoader"] | None = None
+    sitemap_url: str | None = None
+    sitemap_allowed_patterns: tuple[str, ...] | None = None
 
     def build_parser(self) -> ArticleParser:
         """Instantiate the parser associated with this site."""
@@ -80,6 +89,14 @@ _SITE_REGISTRY: Dict[str, SiteDefinition] = {
         default_jobs_file=Path("data/nld_jobs.ndjson"),
         default_user_agent="nld-ingestor/1.0",
         job_loader_factory=build_nld_job_loader,
+    ),
+    "vtcnews": SiteDefinition(
+        slug="vtcnews",
+        parser_factory=VtcnewsParser,
+        default_jobs_file=Path("data/vtcnews_jobs.ndjson"),
+        default_user_agent="vtcnews-ingestor/1.0",
+        sitemap_url="https://vtcnews.vn/sitemap.xml",
+        sitemap_allowed_patterns=("sitemap-article-",),
     ),
 }
 

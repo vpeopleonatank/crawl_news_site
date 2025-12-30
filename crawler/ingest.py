@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from .assets import assets_to_payload
 from .config import IngestConfig, ProxyConfig, TimeoutConfig
 from .http_client import HttpFetchError, HttpFetcher
-from .jobs import ArticleJob, NDJSONJobLoader, load_existing_urls
+from .jobs import ArticleJob, NDJSONJobLoader, SitemapJobLoader, load_existing_urls
 from .parsers import AssetType, ParsedAsset, ParsingError
 from .persistence import ArticlePersistence, ArticlePersistenceError
 from .playwright_support import PlaywrightVideoResolverError
@@ -914,6 +914,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if site.job_loader_factory is not None:
         job_loader = site.job_loader_factory(config, existing_urls)
+    elif config.jobs_file_provided:
+        job_loader = NDJSONJobLoader(
+            jobs_file=config.jobs_file,
+            existing_urls=existing_urls,
+            resume=config.resume,
+        )
+    elif site.sitemap_url:
+        job_loader = SitemapJobLoader(
+            sitemap_url=site.sitemap_url,
+            existing_urls=existing_urls,
+            resume=config.resume,
+            user_agent=config.user_agent,
+            allowed_patterns=site.sitemap_allowed_patterns,
+            max_sitemaps=config.sitemap_max_documents,
+            max_urls_per_sitemap=config.sitemap_max_urls_per_document,
+            request_timeout=config.timeout.request_timeout,
+            proxy=config.proxy,
+        )
     else:
         job_loader = NDJSONJobLoader(
             jobs_file=config.jobs_file,
