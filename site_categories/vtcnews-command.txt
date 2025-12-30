@@ -1,0 +1,6 @@
+docker compose run --rm test_app \
+  python -m crawler.ingest \
+  --site vtcnews \
+  --storage-root /app/storage \
+  --max-workers 2 \
+  --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db --resume --video-enabled-categories __disable_all_videos__

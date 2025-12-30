@@ -134,6 +134,49 @@ python scripts/export_articles_csv.py \
 - `--tables`: Comma-separated table list (default includes all).
 - `--output-dir`: Output directory for CSVs.
 
+## Verifying Crawled Content
+
+After crawling, use the verification tool to detect advertisement images that may have been incorrectly downloaded.
+
+**Scan images for ads:**
+```bash
+docker compose run --rm test_app \
+  python -m crawler.verify images \
+    --site vtcnews \
+    --storage-root /app/storage \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db
+```
+
+This opens a web viewer at http://localhost:8765 showing flagged images with confidence scores.
+
+**Export to CSV without web viewer:**
+```bash
+docker compose run --rm test_app \
+  python -m crawler.verify images \
+    --site vtcnews \
+    --storage-root /app/storage \
+    --db-url postgresql://crawl_user:crawl_password@pgbouncer:6432/crawl_db \
+    --output suspicious.csv \
+    --no-web
+```
+
+**Options:**
+- `--site`: Site slug to scan (vtcnews, thanhnien, znews, etc.)
+- `--storage-root`: Path to storage directory (default: storage)
+- `--db-url`: Database connection URL
+- `--min-confidence`: Minimum confidence to flag (default: 0.5)
+- `--output`: Export to CSV or JSON file
+- `--no-web`: Skip opening web viewer
+- `--port`: Web viewer port (default: 8765)
+
+**Detection heuristics:**
+- Tracking pixels (< 10x10 px)
+- Small images (< 100x100 px)
+- Known ad network domains (admicro.vn, adtima.vn, etc.)
+- Standard banner dimensions (728x90, 300x250, etc.)
+- Ad-related filename patterns (banner, sponsor, ad-)
+- Duplicate images appearing in multiple articles
+
 ## Storage Management
 
 Multi-volume storage management, automatic pause handling, and the helper CLI are
