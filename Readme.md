@@ -65,6 +65,7 @@ docker compose down -v
 - Storage volume is bind-mounted (`./storage:/app/storage`) so downloaded assets persist on the host
 - Clear pending tasks with `docker compose exec rabbitmq rabbitmqctl purge_queue celery` if you need a clean queue
 - All of the above are parametrised via `.env`; copy `.env.sample` and adjust values before running
+- RabbitMQ persistence can be bind-mounted by setting `RABBITMQ_DATA_PATH` (defaults to the named `rabbitmq_data` volume)
 
 **PgBouncer monitoring:**
 - `scripts/pgbouncer_status.sh` runs `SHOW POOLS` through the PgBouncer admin console for a quick view of active/backlogged connections.

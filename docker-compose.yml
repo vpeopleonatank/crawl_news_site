@@ -90,7 +90,7 @@ services:
       - "${HOST_RABBITMQ_PORT:-5672}:5672"
       - "${HOST_RABBITMQ_MGMT_PORT:-15672}:15672"
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - ${RABBITMQ_DATA_PATH:-rabbitmq_data}:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
