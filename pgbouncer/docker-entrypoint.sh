@@ -30,6 +30,7 @@ mkdir -p "$CONFIG_DIR" "$LOG_DIR"
 
 CONFIG_FILE="$CONFIG_DIR/pgbouncer.ini"
 AUTH_FILE="$CONFIG_DIR/userlist.txt"
+PID_FILE="$CONFIG_DIR/pgbouncer.pid"
 
 cat >"$CONFIG_FILE" <<EOF
 [databases]
@@ -53,7 +54,7 @@ server_idle_timeout = ${PGBOUNCER_SERVER_IDLE_TIMEOUT}
 stats_period = ${PGBOUNCER_STATS_PERIOD}
 ignore_startup_parameters = ${PGBOUNCER_IGNORE_STARTUP_PARAMETERS}
 logfile = ${LOG_DIR}/pgbouncer.log
-pidfile = ${CONFIG_DIR}/pgbouncer.pid
+pidfile = ${PID_FILE}
 unix_socket_dir = ${CONFIG_DIR}
 EOF
 
@@ -62,6 +63,21 @@ cat >"$AUTH_FILE" <<EOF
 EOF
 
 chmod 600 "$AUTH_FILE"
+
+if [ -f "$PID_FILE" ]; then
+  stale_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  if [ -n "$stale_pid" ] && [ -d "/proc/$stale_pid" ]; then
+    cmdline="$(tr '\0' ' ' <"/proc/$stale_pid/cmdline" 2>/dev/null || true)"
+    case "$cmdline" in
+      *pgbouncer*)
+        echo "FATAL: pidfile $PID_FILE exists and pid $stale_pid appears to be running: $cmdline" >&2
+        exit 1
+        ;;
+    esac
+  fi
+  echo "Removing stale pidfile: $PID_FILE" >&2
+  rm -f "$PID_FILE"
+fi
 
 if [ "${1:-}" = "pgbouncer" ]; then
   shift
